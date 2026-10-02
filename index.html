@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Orbi 3D</title>
+<style>
+  :root {
+    --bg: #FFFFFF;
+    --ink: #1D2539;
+    --muted: rgba(29, 37, 57, 0.55);
+    --pill-line: rgba(29, 37, 57, 0.10);
+    --accent: #FEEE00;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; overflow: hidden; }
+  body {
+    background: var(--bg);
+    color: var(--ink);
+    font: 500 13px/1.3 -apple-system, BlinkMacSystemFont, "SF Pro Text", Inter, system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    user-select: none;
+  }
+  #stage { position: fixed; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; cursor: grab; }
+  #stage.grabbing { cursor: grabbing; }
+
+  nav {
+    position: fixed; left: 50%; bottom: 28px; transform: translateX(-50%);
+    display: flex; gap: 4px; padding: 5px; border-radius: 999px;
+    background: rgba(255, 255, 255, .82); border: 1px solid var(--pill-line);
+    box-shadow: 0 6px 24px rgba(29, 37, 57, .08);
+    backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+    max-width: calc(100vw - 32px); overflow-x: auto; scrollbar-width: none;
+  }
+  nav::-webkit-scrollbar { display: none; }
+  nav button {
+    appearance: none; border: 0; cursor: pointer; white-space: nowrap;
+    font: inherit; color: var(--muted); background: transparent;
+    padding: 8px 14px; border-radius: 999px; transition: color .2s, background .2s;
+  }
+  nav button:hover { color: var(--ink); }
+  nav button[aria-pressed="true"] { color: var(--ink); background: var(--accent); }
+
+  @media (max-width: 640px) {
+    nav { bottom: 16px; }
+    nav button { padding: 8px 11px; }
+  }
+</style>
+</head>
+<body>
+<canvas id="stage"></canvas>
+
+<nav id="states" aria-label="Bot state"></nav>
+
+<script type="importmap">
+{ "imports": {
+    "three": "./vendor/three.module.js"
+} }
+</script>
+<script type="module" src="main.js"></script>
+</body>
+</html>
