@@ -17,11 +17,14 @@ then visit http://localhost:8000.
 
 - **States** — Idle, Greeting, Working, Error, Dizzy, Sleepy (bar at the bottom, or keys 1–6).
   Faces morph smoothly between states; Idle slowly glances left, right, up-left, up-right.
-- **Intro** — grows in place with a 360° turn, greets with a smile, then settles into Idle.
+- **Intro** — grows in place with a 360° turn, greets with a smile, settles into Idle, then
+  lowers its visor.
 - **Interaction** — drag to rotate (vertical drag tilts); on release it coasts with your
   momentum and springs back face-on. Tap to bounce. ← / → give it a spin.
-- **Helmet** (`helmet.js`) — shell, artwork, liner + stitching, visor and snaps all built from
-  the Figma component's SVG paths; procedural paint, leather and metal surface detail.
+- **Visor** — hinged smoked-glass flip-up visor (button in the bar, click it, or V). It swings
+  around the hinge axis at the temples without clipping, and drops down after the intro.
+- **Helmet** (`helmet.js`) — shell, artwork, liner + stitching built from the Figma
+  component's SVG paths; glass visor + hinges; procedural paint, leather and metal detail.
 - **Shading** — studio environment lighting, analytic helmet-on-ball occlusion, and the
   Figma drop / contact shadows.
 

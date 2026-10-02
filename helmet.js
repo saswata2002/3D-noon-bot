@@ -162,6 +162,17 @@ function drawBackLogo(ctx, fill) {
   ctx.restore();
 }
 
+// Front wordmark: the Figma glyphs, nudged 10px up from their Figma spot
+// (user request) — the decal mask uses the same offset.
+const WORDMARK_DY = -10;
+function drawFrontWordmark(ctx, fill) {
+  ctx.save();
+  ctx.translate(0, WORDMARK_DY);
+  ctx.fillStyle = fill;
+  P.wordmark.forEach(d => ctx.fill(new Path2D(d)));
+  ctx.restore();
+}
+
 // ─── artwork canvases (SVG space → texture) ───────────────────────────────
 const S = 6;
 function svgCanvas(draw) {
@@ -187,8 +198,7 @@ function artCanvas(withWordmark) {
       strokeRound(ctx, d, 10, '#FEEE00');
     }
     if (withWordmark) {
-      ctx.fillStyle = '#000';
-      P.wordmark.forEach(d => ctx.fill(new Path2D(d)));
+      drawFrontWordmark(ctx, '#000');
     } else {
       drawBackLogo(ctx, '#FFFFFF');
     }
@@ -203,8 +213,7 @@ function maskCanvas() {
     ctx.globalCompositeOperation = 'lighter';
     ctx.fillStyle = '#0f0';
     ctx.fill(new Path2D(P.cut));
-    ctx.fillStyle = '#00f';
-    P.wordmark.forEach(d => ctx.fill(new Path2D(d)));
+    drawFrontWordmark(ctx, '#00f');
     drawBackLogo(ctx, '#00f');
   });
 }
@@ -393,218 +402,161 @@ function buildStitch(curve, linerR) {
   return mesh;
 }
 
-// ─── visor + snaps ────────────────────────────────────────────────────────
-// Point on the shell at front-view (X, Y), pushed `off` along the true lathe
-// normal (∇ of x² + z² − r(y)²), so parts layered on the shell keep an even gap.
-function shellPoint(X, Y, off) {
-  const z = zShell(X, Y), e = 1e-3;
-  const dr = (rAt(Y + e) - rAt(Y - e)) / (2 * e);
-  const n = new THREE.Vector3(X, -rAt(Y) * dr, z).normalize();
-  return new THREE.Vector3(X, Y, z).addScaledVector(n, off);
-}
+// ─── glass flip-up visor + hinge ──────────────────────────────────────────
+// A real bubble-visor mechanism: the shield is a section of a sphere centred
+// ON the hinge axis (x axis through VISOR_C, at the helmet's temples), so it
+// swings around the helmet without ever changing its gap to the shell. The
+// radius clears the furthest helmet part in the swept range (liner end caps,
+// ≈1.32 from the centre) by ~0.04. Down = covers brow → chin; up = rotated
+// over the crown, its leading edge resting on the forehead like the Figma
+// band. Hinge stack each side: shell → spacer → visor tab → knurled hub → cap.
+const VISOR_C = new THREE.Vector3(0, 0.1, 0);
+const VISOR_R = 1.36;
+const VISOR_UP = -1.45;                                // rad about the hinge (0 = down)
+const DEG = Math.PI / 180;
 
-// Robust projection onto the shell from an interior point (works over the
-// crown pole, where recomputing z from (X, Y) breaks down), and the true normal.
-const SHELL_TOP = profile[0][1];
-const SHELL_C = new THREE.Vector3(0, 0.25, 0);
-function projectToShell(Q) {
-  const d = Q.clone().sub(SHELL_C).normalize();
-  const outside = (t) => {
-    const p = SHELL_C.clone().addScaledVector(d, t);
-    return p.y >= SHELL_TOP || p.x * p.x + p.z * p.z - rAt(p.y) ** 2 > 0;
-  };
-  let a = 0, b = 3;
-  for (let k = 0; k < 40; k++) { const m = (a + b) / 2; if (outside(m)) b = m; else a = m; }
-  return SHELL_C.clone().addScaledVector(d, (a + b) / 2);
-}
-function shellNormalAt(P) {
-  const e = 1e-3, dr = (rAt(P.y + e) - rAt(P.y - e)) / (2 * e);
-  return new THREE.Vector3(P.x, -rAt(P.y) * dr, P.z).normalize();
-}
-
-// Visor pivots — Figma "Snap L/R" centres
-const SNAP = toXY(60, 58);
-const VISOR = { lift: 0.04, thick: 0.024 };
-
-// Smoked flip-up visor, built like the real part: it hinges on the axis
-// through the two snap pivots, so its centre line is the shell cut by a plane
-// through that axis (aimed at the Figma visor's centre, X 0 / svg y 22). Along
-// that line it is a constant-width band (Figma height 24px at the centre) that
-// ends in round tabs centred on each snap — a clean stadium outline from every
-// angle. Built as a solid: outer + inner skins and a rounded rim all round.
-function buildVisor() {
-  const { lift, thick } = VISOR;
-  const Xs = Math.abs(SNAP[0]), Ys = SNAP[1], zs = zShell(-Xs, Ys);
-  const toPlane = (Y, z) => Math.atan2(Y - Ys, z - zs);
-  const [, yMid] = toXY(164, 22), [, yTop] = toXY(164, 10), [, yBot] = toXY(164, 34);
-  const th = toPlane(yMid, zShell(0, yMid));
-  const sn = Math.sin(th), cs = Math.cos(th);
-  // The hinge plane meets the shell in a closed loop through both snaps. Work
-  // in plane coordinates (X, t) — t runs from the hinge axis toward the visor —
-  // and trace the loop by angle around a point inside it.
-  const toWorld = (X, tt) => new THREE.Vector3(X, Ys + tt * sn, zs + tt * cs);
-  const f = (X, tt) => { const Y = Ys + tt * sn, z = zs + tt * cs; return X * X + z * z - rAt(Y) ** 2; };
-  const firstExit = (ox, ot, dx, dt) => {      // march out to the shell, then bisect
-    let a = 0, b = 0;
-    for (let k = 1; k < 400; k++) { b = k * 0.01; if (f(ox + dx * b, ot + dt * b) > 0) break; a = b; }
-    for (let k = 0; k < 40; k++) { const m = (a + b) / 2; if (f(ox + dx * m, ot + dt * m) > 0) b = m; else a = m; }
-    return (a + b) / 2;
-  };
-  const tF = firstExit(0, 0, 0, 1), tB = -firstExit(0, 0, 0, -1);
-  const tc = (tF + tB) / 2;
-  // the visor arc is the upper side (toward +t): sweep from the left snap,
-  // over the top, to the right snap, plus a margin for the round tabs
-  const psiR = Math.atan2(-tc, Xs);
-  let psiL = Math.atan2(-tc, -Xs);
-  if (psiL < psiR) psiL += Math.PI * 2;
-  const raw = [];
-  for (let i = 0, N = 500; i <= N; i++) {
-    const psi = (psiL + 0.45) + ((psiR - 0.45) - (psiL + 0.45)) * (i / N);
-    const dx = Math.cos(psi), dt = Math.sin(psi);
-    const rho = firstExit(0, tc, dx, dt);
-    raw.push(toWorld(dx * rho, tc + dt * rho));
-  }
-  // half-width: half the 3D distance across the Figma band at the centre
-  const W = Math.max(0.085, shellPoint(0, yTop, 0).distanceTo(shellPoint(0, yBot, 0)) / 2);
-
-  const arc = [0];
-  for (let i = 1; i < raw.length; i++) arc.push(arc[i - 1] + raw[i].distanceTo(raw[i - 1]));
-  const sNear = (P3) => {
-    let best = 0, bd = Infinity;
-    raw.forEach((q, i) => { const d = q.distanceToSquared(P3); if (d < bd) { bd = d; best = i; } });
-    return arc[best];
-  };
-  const sL = sNear(toWorld(-Xs, 0)), sR = sNear(toWorld(Xs, 0));
-  const pointAt = (sv) => {
-    for (let i = 1; i < raw.length; i++) if (arc[i] >= sv) {
-      const f = (sv - arc[i - 1]) / (arc[i] - arc[i - 1] || 1);
-      return raw[i - 1].clone().lerp(raw[i], f);
-    }
-    return raw[raw.length - 1].clone();
-  };
-  // stadium half-width along the line: full between the snaps, round past them
-  const halfW = (sv) => {
-    const d = sv < sL ? sL - sv : sv > sR ? sv - sR : 0;
-    return Math.sqrt(Math.max(0, W * W - d * d));
-  };
-
-  const cols = 360, rows = 20;
-  const outer = [], inner = [], col = [], uv = [], idx = [];
-  const cTop = new THREE.Color(0x5b6170).multiplyScalar(0.62), cBot = new THREE.Color(0x14161c);
-  const rimTop = [], rimBot = [];
-  const T = new THREE.Vector3(), Nn = new THREE.Vector3(), L = new THREE.Vector3();
-  const s0 = sL - W, s1 = sR + W;
-  for (let i = 0; i < cols; i++) {
-    const u = i / (cols - 1);
-    // denser toward the tabs so the round ends stay round
-    const sv = s0 + (s1 - s0) * (0.5 - 0.5 * Math.cos(u * Math.PI));
-    const C = pointAt(sv);
-    T.copy(pointAt(Math.min(s1, sv + 1e-3))).sub(pointAt(Math.max(s0, sv - 1e-3))).normalize();
-    Nn.copy(shellNormalAt(C));
-    L.crossVectors(Nn, T).normalize();
-    if (L.y < 0) L.negate();                       // v = 0 is the upper edge
-    const hw = halfW(sv);
-    for (let j = 0; j <= rows; j++) {
-      const v = j / rows;
-      const P3 = projectToShell(C.clone().addScaledVector(L, (0.5 - v) * 2 * hw));
-      const nP = shellNormalAt(P3);
-      const o = P3.clone().addScaledVector(nP, lift + thick / 2), n = P3.clone().addScaledVector(nP, lift - thick / 2);
-      const k = (j * cols + i) * 3;
-      outer[k] = o.x; outer[k + 1] = o.y; outer[k + 2] = o.z;
-      inner[k] = n.x; inner[k + 1] = n.y; inner[k + 2] = n.z;
-      const c = cTop.clone().lerp(cBot, v);
-      col[k] = c.r; col[k + 1] = c.g; col[k + 2] = c.b;
-      uv[(j * cols + i) * 2] = u; uv[(j * cols + i) * 2 + 1] = v;
-      if (j === 0) rimTop.push(P3.clone().addScaledVector(nP, lift));
-      if (j === rows) rimBot.push(P3.clone().addScaledVector(nP, lift));
-    }
-  }
-  for (let j = 0; j < rows; j++) for (let i = 0; i < cols - 1; i++) {
-    const a = j * cols + i, b = a + 1, c = a + cols, d = c + 1;
-    idx.push(a, c, b, b, c, d);
-  }
-  const skin = (positions, flip) => {
-    const geo = new THREE.BufferGeometry();
-    geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-    geo.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
-    geo.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
-    const ix = flip ? idx.slice() : idx;
-    if (flip) for (let k = 0; k < ix.length; k += 3) [ix[k + 1], ix[k + 2]] = [ix[k + 2], ix[k + 1]];
-    geo.setIndex(ix);
-    geo.computeVertexNormals();
-    return geo;
-  };
-
+// Smoked polycarbonate. Deliberately NOT a transmission (refraction)
+// material: three's transmission pass re-renders the scene behind the glass
+// with an offset, which showed the visor's own rim and pull tab as ghost
+// copies. Plain alpha glass with a Fresnel-weighted opacity reads as glass
+// (clear face-on, silvery at grazing angles) with no doubling.
+function glassMaterial() {
   const mat = new THREE.MeshPhysicalMaterial({
-    vertexColors: true, roughness: 0.16, clearcoat: 0.35, clearcoatRoughness: 0.1, specularIntensity: 0.45,
+    color: 0x7f8794,                                   // light smoke tint
+    roughness: 0.04,
+    specularIntensity: 1,
+    clearcoat: 1,
+    clearcoatRoughness: 0.02,
+    transparent: true,
+    opacity: 0.16,
+    depthWrite: false,
     side: THREE.DoubleSide,
   });
-  mat.defines = { USE_UV: '' };
-  // dark 1px rim (#0A0B0E @ 60%)
   mat.onBeforeCompile = (sh) => {
-    sh.fragmentShader = sh.fragmentShader.replace('#include <color_fragment>', `#include <color_fragment>
-float e = min(min(vUv.x, 1.0 - vUv.x) * 18.0, min(vUv.y, 1.0 - vUv.y) * 2.2);
-diffuseColor.rgb = mix(vec3(0.04), diffuseColor.rgb, smoothstep(0.0, 0.12, e));`)
-      .replace('#include <common>', `#include <common>
-varying vec3 vObj;
-${SURFACE_GLSL}`)
-      .replace('#include <roughnessmap_fragment>', `#include <roughnessmap_fragment>
-// polycarbonate: soft wipe marks + sparse hairline scratches along the visor
-float wipe = smoothstep(0.45, 0.85, fbm3(vObj * vec3(5.0, 9.0, 5.0) + 3.0));
-float sc = vnoise(vec3(vUv.x * 900.0, vUv.y * 6.0, 1.7));
-float scratch = smoothstep(0.93, 0.99, sc) * step(0.6, vnoise(vObj * 14.0));
-roughnessFactor = clamp(roughnessFactor + wipe * 0.12 + scratch * 0.35, 0.05, 0.8);`);
-    sh.vertexShader = sh.vertexShader
-      .replace('#include <common>', '#include <common>\nvarying vec3 vObj;')
-      .replace('#include <begin_vertex>', '#include <begin_vertex>\nvObj = position;');
+    sh.fragmentShader = sh.fragmentShader.replace('#include <opaque_fragment>', `
+float fresG = pow(1.0 - abs(dot(normal, normalize(vViewPosition))), 3.0);
+diffuseColor.a = mix(diffuseColor.a, 0.62, fresG);   // denser and more reflective at grazing angles
+#include <opaque_fragment>`);
   };
-  const group = new THREE.Group();
-  for (const geo of [skin(outer, false), skin(inner, true)]) {
-    const m = new THREE.Mesh(geo, mat);
-    m.renderOrder = 5;
-    group.add(m);
-  }
-  // rounded rim: top edge, round the tab, back along the bottom edge
-  const loop = [...rimTop, ...rimBot.reverse()].filter((p, i, arr) => i === 0 || p.distanceTo(arr[i - 1]) > 1e-4);
-  const rim = new THREE.Mesh(
-    new THREE.TubeGeometry(new THREE.CatmullRomCurve3(loop, true, 'centripetal'), 1000, thick / 2, 16, true),
-    new THREE.MeshPhysicalMaterial({ color: 0x101216, roughness: 0.22, clearcoat: 0.5, clearcoatRoughness: 0.1 }),
-  );
-  rim.renderOrder = 5;
-  group.add(rim);
-  return group;
+  return mat;
 }
 
-function buildSnap(x, y) {
+function buildGlassVisor() {
+  // outline in (φ around y from the front, θ from the top), down pose
+  const PHI_END = 97 * DEG, PHI_TAB = 84 * DEG;        // past ±84° it narrows into a round hinge tab
+  const thTop = (ph) => THREE.MathUtils.lerp(66, 79, THREE.MathUtils.smoothstep(Math.abs(ph), 40 * DEG, PHI_TAB)) * DEG;
+  const thBot = (ph) => THREE.MathUtils.lerp(122, 102, THREE.MathUtils.smoothstep(Math.abs(ph), 30 * DEG, PHI_TAB)) * DEG;
+  const pt = (ph, th) => new THREE.Vector3(
+    VISOR_R * Math.sin(th) * Math.sin(ph), VISOR_R * Math.cos(th), VISOR_R * Math.sin(th) * Math.cos(ph));
+
+  const cols = 220, rows = 40;
+  const pos = [], uv = [], idx = [], rimTop = [], rimBot = [];
+  for (let i = 0; i < cols; i++) {
+    const u = i / (cols - 1);
+    const ph = -PHI_END + 2 * PHI_END * (0.5 - 0.5 * Math.cos(u * Math.PI));   // denser toward the tabs
+    let t0 = thTop(ph), t1 = thBot(ph);
+    const ax = Math.abs(ph);
+    if (ax > PHI_TAB) {                                 // round tab end around the hinge (θ = 90°)
+      const k = Math.sqrt(Math.max(0, 1 - ((ax - PHI_TAB) / (PHI_END - PHI_TAB)) ** 2));
+      t0 = 90 * DEG - (90 * DEG - t0) * k;
+      t1 = 90 * DEG + (t1 - 90 * DEG) * k;
+    }
+    for (let j = 0; j <= rows; j++) {
+      const v = j / rows;
+      const p = pt(ph, t0 + (t1 - t0) * v);
+      pos.push(p.x, p.y, p.z);
+      uv.push(u, v);
+    }
+    rimTop.push(pt(ph, t0));
+    rimBot.push(pt(ph, t1));
+  }
+  for (let i = 0; i < cols - 1; i++) for (let j = 0; j < rows; j++) {
+    const a = i * (rows + 1) + j, b = a + 1, c = a + rows + 1, d = c + 1;
+    idx.push(a, b, c, b, d, c);
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  geo.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+  geo.setIndex(idx);
+  geo.computeVertexNormals();
+
+  const pivot = new THREE.Group();                      // rotates about the hinge axis
+  pivot.position.copy(VISOR_C);
+  const shield = new THREE.Mesh(geo, glassMaterial());
+  shield.name = 'Visor glass';
+  shield.renderOrder = 6;
+  pivot.add(shield);
+
+  // polished rim all the way round (the shield's moulded edge)
+  const loop = [...rimTop, ...rimBot.reverse()].filter((p, i, a) => i === 0 || p.distanceTo(a[i - 1]) > 1e-4);
+  const rim = new THREE.Mesh(
+    new THREE.TubeGeometry(new THREE.CatmullRomCurve3(loop, true, 'centripetal'), 900, 0.012, 12, true),
+    new THREE.MeshPhysicalMaterial({ color: 0x23262d, roughness: 0.18, clearcoat: 0.8, clearcoatRoughness: 0.05 }),
+  );
+  rim.name = 'Visor rim';
+  pivot.add(rim);
+
+  // rubber pull tab at the bottom centre
+  const tab = new THREE.Mesh(
+    new THREE.CapsuleGeometry(0.022, 0.12, 4, 12),
+    new THREE.MeshPhysicalMaterial({ color: 0x111214, roughness: 0.55 }),
+  );
+  const tb = pt(0, thBot(0) + 1.2 * DEG);
+  tab.position.copy(tb).addScaledVector(tb.clone().normalize(), 0.012);
+  tab.rotation.z = Math.PI / 2;
+  tab.name = 'Visor pull tab';
+  pivot.add(tab);
+
+  return { pivot, pickables: [shield, rim, tab] };
+}
+
+function buildHinge(side) {
   const g = new THREE.Group();
-  const [X, Y] = toXY(x, y);
-  const base = shellPoint(X, Y, 0);
-  const at = shellPoint(X, Y, VISOR.lift + VISOR.thick / 2);   // seated on the visor tab
-  g.position.copy(at);
-  g.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), at.clone().sub(base).normalize());
-  const ring = new THREE.Mesh(
-    new THREE.SphereGeometry(8 / PX, 64, 24, 0, Math.PI * 2, 0, Math.PI / 2),
-    // spun metal: sphere uv runs around the cap axis, so the anisotropic
-    // highlight streaks concentrically like a machined stud
-    new THREE.MeshPhysicalMaterial({ color: 0xc9cfd6, metalness: 0.9, roughness: 0.32, anisotropy: 0.85 }),
-  );
-  ring.rotation.x = Math.PI / 2;
-  ring.scale.set(1, 0.45, 1);
-  const core = new THREE.Mesh(
-    new THREE.SphereGeometry(3.6 / PX, 48, 16, 0, Math.PI * 2, 0, Math.PI / 2),
-    new THREE.MeshPhysicalMaterial({ color: 0x9aa3ad, metalness: 0.9, roughness: 0.38, anisotropy: 0.85 }),
-  );
-  core.rotation.x = Math.PI / 2;
-  core.scale.set(1, 0.4, 1);
-  core.position.z = 0.032;
-  g.add(ring, core);
+  const black = new THREE.MeshPhysicalMaterial({ color: 0x0d0d0f, roughness: 0.38, clearcoat: 0.5, clearcoatRoughness: 0.2 });
+  const knurl = new THREE.MeshPhysicalMaterial({ color: 0x141518, roughness: 0.45, flatShading: true });
+  const metal = new THREE.MeshPhysicalMaterial({ color: 0xc9cfd6, metalness: 0.9, roughness: 0.3, anisotropy: 0.8 });
+  const xs = rAt(VISOR_C.y);                            // shell surface at the hinge
+  const parts = [
+    // [radius, from x, to x, material, radial segments]
+    [0.11, xs - 0.04, VISOR_R - 0.01, black, 48],        // spacer from the shell to the visor tab
+    [0.15, VISOR_R + 0.012, VISOR_R + 0.062, knurl, 40], // knurled hub over the tab
+    [0.075, VISOR_R + 0.062, VISOR_R + 0.088, metal, 48],// chrome cap
+  ];
+  for (const [r, x0, x1, mat, seg] of parts) {
+    const m = new THREE.Mesh(new THREE.CylinderGeometry(r, r, x1 - x0, seg), mat);
+    m.rotation.z = Math.PI / 2;
+    m.position.set(side * (x0 + x1) / 2, VISOR_C.y, VISOR_C.z);
+    g.add(m);
+  }
+  const slot = new THREE.Mesh(new THREE.BoxGeometry(0.012, 0.11, 0.016), black);
+  slot.position.set(side * (VISOR_R + 0.09), VISOR_C.y, VISOR_C.z);
+  slot.rotation.x = 0.5;
+  g.add(slot);
   return g;
 }
 
 // ─── assembly ─────────────────────────────────────────────────────────────
+// Returns the helmet group plus a visor controller: toggle()/setDown(),
+// update(dt) for the hinge motion, and the meshes to hit-test for clicks.
 export function createHelmet() {
   const group = new THREE.Group();
   group.name = 'Orbi Soft Helmet';
-  group.add(buildShell(), buildEdgeBead(), buildLiner(), buildVisor(), buildSnap(60, 58), buildSnap(268, 58));
-  return group;
+  const visor = buildGlassVisor();
+  group.add(buildShell(), buildEdgeBead(), buildLiner(), visor.pivot, buildHinge(1), buildHinge(-1));
+
+  // hinge motion: a weighted spring with a little detent bounce at each end
+  const v = { a: VISOR_UP, va: 0, target: VISOR_UP };
+  visor.pivot.rotation.x = v.a;
+  return {
+    group,
+    visorPickables: visor.pickables,
+    get visorDown() { return v.target === 0; },
+    setVisorDown(down) { v.target = down ? 0 : VISOR_UP; },
+    toggleVisor() { v.target = v.target === 0 ? VISOR_UP : 0; return v.target === 0; },
+    update(dt) {
+      v.va += (75 * (v.target - v.a) - 11.5 * v.va) * dt;   // ζ ≈ 0.66: weighted swing, small detent bounce
+      v.a += v.va * dt;
+      visor.pivot.rotation.x = v.a;
+    },
+  };
 }

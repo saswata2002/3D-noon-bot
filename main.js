@@ -44,6 +44,7 @@ renderer.setClearColor(0x000000, 0);
 // ball's shader instead (see HELMET_AO_GLSL).
 
 const scene = new THREE.Scene();
+scene.background = new THREE.Color(0xffffff);   // matches the page
 const pmrem = new THREE.PMREMGenerator(renderer);
 
 // Studio environment: a dim warm gradient dome plus one large softbox up-left
@@ -355,7 +356,7 @@ body.frustumCulled = false;
 scene.add(body);
 
 const helmet = createHelmet();
-body.add(helmet);
+body.add(helmet.group);
 
 // ─── shadows, exactly as Figma frame 1060:79394 ───────────────────────────
 // In the 80px frame the body is r 30, so 1 unit = 30px; Figma blur radius r
@@ -605,11 +606,37 @@ STATES.forEach((s, i) => {
   nav.appendChild(b);
 });
 function syncNav() {
-  nav.querySelectorAll('button').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.state === state)));
+  nav.querySelectorAll('button[data-state]').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.state === state)));
 }
+// visor toggle, after a divider in the same bar
+const sep = document.createElement('span');
+sep.className = 'sep';
+nav.appendChild(sep);
+const visorBtn = document.createElement('button');
+visorBtn.type = 'button';
+visorBtn.className = 'visor';
+visorBtn.title = 'Visor up / down (V)';
+nav.appendChild(visorBtn);
+function syncVisor() {
+  visorBtn.textContent = helmet.visorDown ? 'Visor up' : 'Visor down';
+  visorBtn.setAttribute('aria-pressed', String(helmet.visorDown));
+}
+function setVisor(down) {
+  if (helmet.visorDown === down) return;
+  helmet.setVisorDown(down);
+  m.nodV += down ? 0.5 : -0.5;                        // a little nod as the visor swings
+  syncVisor();
+}
+function toggleVisor() {
+  endIntro();
+  setVisor(!helmet.visorDown);
+}
+visorBtn.addEventListener('click', toggleVisor);
+syncVisor();
 addEventListener('keydown', (e) => {
   const n = parseInt(e.key, 10);
   if (n >= 1 && n <= STATES.length) { endIntro(); setState(STATES[n - 1].key); }
+  if (e.key === 'v' || e.key === 'V') toggleVisor();
   if (e.key === 'ArrowLeft') nudge(-1);
   if (e.key === 'ArrowRight') nudge(1);
 });
@@ -658,12 +685,18 @@ function endGesture() {
   m.spinV = idle > 80 ? 0 : THREE.MathUtils.clamp(m.dragVel, -14, 14);
   m.dragVel = 0;
   canvas.classList.remove('grabbing');
-  if (g.moved < 6 && performance.now() - g.t < 300) tap();
+  if (g.moved < 6 && performance.now() - g.t < 300) tap(g);
 }
 canvas.addEventListener('pointerup', endGesture);
 canvas.addEventListener('pointercancel', endGesture);
 
-function tap() {
+const raycaster = new THREE.Raycaster();
+function tap(g) {
+  // clicking the visor flips it
+  const r = canvas.getBoundingClientRect();
+  raycaster.setFromCamera(new THREE.Vector2(((g.x - r.left) / r.width) * 2 - 1, -((g.y - r.top) / r.height) * 2 + 1), camera);
+  const hit = raycaster.intersectObjects([...helmet.visorPickables, body], false)[0];
+  if (hit && hit.object !== body) { toggleVisor(); return; }
   if (state === 'sleepy') { setState('idle'); return; }
   hop(2.6);
   m.nodV += 1.2;
@@ -729,7 +762,11 @@ function updateIntro(dt) {
     intro.greeted = true;
     setState('greeting', { quiet: true });
     hop(2.2);
-    schedule(GREET_FOR, () => { if (state === 'greeting') setState('idle'); });
+    schedule(GREET_FOR, () => {
+      if (state !== 'greeting') return;
+      setState('idle');
+      schedule(0.3, () => { if (state === 'idle') setVisor(true); });   // settles in, then visor down
+    });
   }
   if (ps >= 1 && pr >= 1) endIntro();
 }
@@ -790,6 +827,7 @@ function update(dt) {
 
   // state-specific pose (self-driven — never from the cursor)
   updateGaze(dt);
+  helmet.update(dt);
   let yaw = gaze.yaw, pitch = BASE_PITCH + gaze.pitch, roll = 0, sway = 0;
   switch (state) {
     case 'idle':
@@ -880,4 +918,4 @@ setState('idle', { quiet: true });
 requestAnimationFrame(frame);
 
 // small hook for automated checks
-window.orbi = { setState, nudge, advance: update, faceCanvas, intro, gaze, replay: () => { setState('idle', { quiet: true }); Object.assign(intro, { active: true, t: 0, scale: 0, greeted: false }); }, get state() { return state; }, motion: m, renderer, scene, camera };
+window.orbi = { setState, nudge, helmet, toggleVisor, advance: update, faceCanvas, intro, gaze, replay: () => { setState('idle', { quiet: true }); helmet.setVisorDown(false); syncVisor(); Object.assign(intro, { active: true, t: 0, scale: 0, greeted: false }); }, get state() { return state; }, motion: m, renderer, scene, camera };
