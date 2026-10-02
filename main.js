@@ -568,10 +568,17 @@ function schedule(at, fn) { scripts.push({ at: stateTime + at, fn }); }
 function setState(next, { quiet = false } = {}) {
   if (!STATES.some(s => s.key === next)) return;
   const prev = state;
+  if (prev !== next) { prevState = prev; prevStateTime = stateTime; poseBlend = 0; }
   state = next;
   stateTime = 0;
   scripts.length = 0;
-  morph = { from: faceCur, to: faceSpec(next), t: 0 };
+  {
+    // into / out of the round pill eyes: go via a closed eye (natural blink
+    // into the new expression) instead of twisting the pill into the shape
+    const to = faceSpec(next);
+    const fromPill = faceCur.blink > 0.5, toPill = to.blink > 0.5;
+    morph = fromPill !== toPill ? { via: true, fromPill, from: faceCur, to, t: 0 } : { from: faceCur, to, t: 0 };
+  }
   m.shake = 0;
 
   if (!quiet) {
@@ -621,10 +628,10 @@ function syncVisor() {
   visorBtn.textContent = helmet.visorDown ? 'Visor up' : 'Visor down';
   visorBtn.setAttribute('aria-pressed', String(helmet.visorDown));
 }
-function setVisor(down) {
+function setVisor(down, { slow = false } = {}) {
   if (helmet.visorDown === down) return;
-  helmet.setVisorDown(down);
-  m.nodV += down ? 0.5 : -0.5;                        // a little nod as the visor swings
+  helmet.setVisorDown(down, { slow });
+  m.nodV += (down ? 0.5 : -0.5) * (slow ? 0.4 : 1);   // a little nod as the visor swings
   syncVisor();
 }
 function toggleVisor() {
@@ -705,7 +712,45 @@ function tap(g) {
 // ─── face animation ───────────────────────────────────────────────────────
 const MORPH_S = 0.24;
 const easeInOutCubic = (x) => (x < 0.5 ? 4 * x * x * x : 1 - (-2 * x + 2) ** 3 / 2);
+const easeInQuad = (x) => x * x;
+const easeOutCubicF = (x) => 1 - (1 - x) ** 3;
+// The "closed eye": a short horizontal stroke, exactly the size of a pill eye
+// squashed shut (28 wide × ~7 tall), so the two can hand over seamlessly.
+const SQUASH = 7.1 / 62;
+const CLOSED = (() => {
+  const l = linePts(-42.5, -7, -21.5, -7);
+  return { eyes: [{ a: l, b: l, w: 7 }, { a: mirror(l), b: mirror(l), w: 7 }], mouth: MOUTH.none(), glint: 0, lip: 1, cheeks: 0, blink: 0 };
+})();
+const VIA = { close: 0.16, open: 0.26 };            // s: blink shut, then open into the new shape
+const VIA_BACK = { reshape: 0.3, open: 0.26 };      // back to pills: relax shut, then open gently
 function updateFace(dt) {
+  // pill ⇄ other face: squash the pills shut, then the closed line bends into
+  // the new shape (and the reverse: reshape to closed, then open into pills)
+  if (morph && morph.via) {
+    const total = morph.fromPill ? VIA.close + VIA.open : VIA_BACK.reshape + VIA_BACK.open;
+    morph.t = Math.min(1, morph.t + dt / total);
+    if (morph.fromPill) {
+      const split = VIA.close / total;
+      if (morph.t < split) {
+        faceCur = morph.from;
+        drawFace(morph.from, lerp(1, SQUASH, easeInQuad(morph.t / split)));
+      } else {
+        faceCur = lerpFace(CLOSED, morph.to, easeOutCubicF((morph.t - split) / (1 - split)));
+        drawFace(faceCur, 1);
+      }
+    } else {
+      const split = VIA_BACK.reshape / total;         // relax into a closed line, then open gently
+      if (morph.t < split) {
+        faceCur = lerpFace(morph.from, CLOSED, easeInOutCubic(morph.t / split));
+        drawFace(faceCur, 1);
+      } else {
+        faceCur = morph.to;
+        drawFace(morph.to, lerp(SQUASH, 1, easeInOutCubic((morph.t - split) / (1 - split))));
+      }
+    }
+    if (morph.t >= 1) { faceCur = morph.to; morph = null; drawFace(faceCur, 1); }
+    return;
+  }
   // state change: morph the current face (even mid-morph) into the new one
   if (morph) {
     morph.t = Math.min(1, morph.t + dt / MORPH_S);
@@ -765,7 +810,7 @@ function updateIntro(dt) {
     schedule(GREET_FOR, () => {
       if (state !== 'greeting') return;
       setState('idle');
-      schedule(0.3, () => { if (state === 'idle') setVisor(true); });   // settles in, then visor down
+      schedule(0.2, () => { if (state === 'idle') setVisor(true, { slow: true }); });   // settles in, then the visor glides down
     });
   }
   if (ps >= 1 && pr >= 1) endIntro();
@@ -809,6 +854,42 @@ function updateGaze(dt) {
   gaze.pitch += gaze.vp * dt;
 }
 
+// Per-state body pose (offsets on top of gaze / base pitch). Kept as a pure
+// function of time so the previous state's pose can keep playing while it
+// crossfades into the new one — no snap when a state ends.
+const POSE_BLEND_S = 0.5;
+let prevState = 'idle', prevStateTime = 0, poseBlend = 1;
+function statePose(st, t, st_t) {
+  const p = { yaw: 0, pitch: 0, roll: 0, sway: 0 };
+  switch (st) {
+    case 'idle':
+      p.yaw = Math.sin(t * 0.7) * 0.015;             // faint drift between glances
+      break;
+    case 'working':
+      p.yaw = Math.sin(t * 1.5) * 0.3;
+      p.pitch = 0.1;
+      break;
+    case 'greeting':
+      p.roll = Math.sin(st_t * 9) * 0.2 * Math.exp(-st_t * 1.2) + 0.06;
+      break;
+    case 'error':
+      p.roll = Math.sin(st_t * 18) * 0.1 * Math.exp(-st_t * 3);
+      p.pitch = 0.05;
+      break;
+    case 'dizzy':
+      p.roll = Math.sin(t * 2.6) * 0.24;
+      p.pitch = Math.cos(t * 2.6) * 0.14;
+      p.yaw = Math.sin(t * 1.3) * 0.18;
+      p.sway = Math.sin(t * 2.6) * 0.08;
+      break;
+    case 'sleepy':
+      p.roll = 0.14 + Math.sin(t * 0.8) * 0.03;
+      p.pitch = 0.16;
+      break;
+  }
+  return p;
+}
+
 function update(dt) {
   simT += dt;
   const t = simT;
@@ -828,33 +909,16 @@ function update(dt) {
   // state-specific pose (self-driven — never from the cursor)
   updateGaze(dt);
   helmet.update(dt);
-  let yaw = gaze.yaw, pitch = BASE_PITCH + gaze.pitch, roll = 0, sway = 0;
-  switch (state) {
-    case 'idle':
-      yaw += Math.sin(t * 0.7) * 0.015;             // faint drift between glances
-      break;
-    case 'working':
-      yaw += Math.sin(t * 1.5) * 0.3;
-      pitch += 0.1;
-      break;
-    case 'greeting':
-      roll = Math.sin(stateTime * 9) * 0.2 * Math.exp(-stateTime * 1.2) + 0.06;
-      break;
-    case 'error':
-      roll = Math.sin(stateTime * 18) * 0.1 * Math.exp(-stateTime * 3);
-      pitch += 0.05;
-      break;
-    case 'dizzy':
-      roll = Math.sin(t * 2.6) * 0.24;
-      pitch += Math.cos(t * 2.6) * 0.14;
-      yaw += Math.sin(t * 1.3) * 0.18;
-      sway = Math.sin(t * 2.6) * 0.08;
-      break;
-    case 'sleepy':
-      roll = 0.14 + Math.sin(t * 0.8) * 0.03;
-      pitch += 0.16;
-      break;
-  }
+  // state pose, crossfaded from the previous state's pose after a change
+  poseBlend = Math.min(1, poseBlend + dt / POSE_BLEND_S);
+  prevStateTime += dt;
+  const cur = statePose(state, t, stateTime);
+  const pb = easeInOutCubic(poseBlend);
+  const pv = pb < 1 ? statePose(prevState, t, prevStateTime) : cur;
+  let yaw = gaze.yaw + lerp(pv.yaw, cur.yaw, pb);
+  let pitch = BASE_PITCH + gaze.pitch + lerp(pv.pitch, cur.pitch, pb);
+  let roll = lerp(pv.roll, cur.roll, pb);
+  const sway = lerp(pv.sway, cur.sway, pb);
   // lean into the spin like a ball rolling off a flick, plus landing wobble
   roll += THREE.MathUtils.clamp(-(m.dragging ? m.dragVel : m.spinV) * 0.012, -0.18, 0.18) - m.rock;
   pitch += m.nod + m.tilt;

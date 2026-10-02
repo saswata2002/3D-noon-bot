@@ -545,16 +545,21 @@ export function createHelmet() {
   group.add(buildShell(), buildEdgeBead(), buildLiner(), visor.pivot, buildHinge(1), buildHinge(-1));
 
   // hinge motion: a weighted spring with a little detent bounce at each end
-  const v = { a: VISOR_UP, va: 0, target: VISOR_UP };
+  // (user toggles), or a softer one for the automatic lower after the intro —
+  // still snappy (~0.6 s) with a very subtle elastic settle (~2° past closed);
+  // `slow` picks that spring
+  const SNAPPY = { k: 75, d: 11.5 };                  // ζ ≈ 0.66
+  const SLOW = { k: 30, d: 8.2 };                     // ζ ≈ 0.75
+  const v = { a: VISOR_UP, va: 0, target: VISOR_UP, spring: SNAPPY };
   visor.pivot.rotation.x = v.a;
   return {
     group,
     visorPickables: visor.pickables,
     get visorDown() { return v.target === 0; },
-    setVisorDown(down) { v.target = down ? 0 : VISOR_UP; },
-    toggleVisor() { v.target = v.target === 0 ? VISOR_UP : 0; return v.target === 0; },
+    setVisorDown(down, { slow = false } = {}) { v.target = down ? 0 : VISOR_UP; v.spring = slow ? SLOW : SNAPPY; },
+    toggleVisor() { v.target = v.target === 0 ? VISOR_UP : 0; v.spring = SNAPPY; return v.target === 0; },
     update(dt) {
-      v.va += (75 * (v.target - v.a) - 11.5 * v.va) * dt;   // ζ ≈ 0.66: weighted swing, small detent bounce
+      v.va += (v.spring.k * (v.target - v.a) - v.spring.d * v.va) * dt;
       v.a += v.va * dt;
       visor.pivot.rotation.x = v.a;
     },
