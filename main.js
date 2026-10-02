@@ -19,6 +19,8 @@ const HOVER_Y = 0;              // resting centre height while floating
 const FLOOR_Y = -1.18;          // Figma: body bottom 270, contact shadow 288 → 0.15R gap
 const GRAVITY = 17;              // low: a light, floaty toy ball
 const DRAG_YAW = 0.0105;        // rad per px of horizontal drag (~360° over 600px)
+const DRAG_PITCH = 0.006;       // rad per px of vertical drag (tilt while swiping the visor)
+const MAX_TILT = 0.5;
 const BASE_PITCH = -0.2;        // tip the face up toward the camera
 
 const STATES = [
@@ -469,6 +471,7 @@ const m = {
   x: 0, vx: 0,
   spin: 0, spinV: 0,                  // yaw: set by dragging; after release glides, then springs home
   homing: false, home: 0, glideF: 0,  // home = front-facing turn it settles into; glideF = coast friction
+  tilt: 0, tiltV: 0,                  // vertical-drag tilt, eases back to level on release
   dragging: false, dragVel: 0, lastDir: 1,
   nod: 0, nodV: 0, rock: 0, rockV: 0, // pitch / roll wobble kicked by landings
   shake: 0,                           // error tremble amplitude
@@ -518,6 +521,11 @@ function stepMotion(h) {
       }
     }
     m.spin += m.spinV * h;
+  }
+  if (!m.dragging) {
+    // tilt eases back to level (slightly under-damped)
+    m.tiltV += (-70 * m.tilt - 11 * m.tiltV) * h;
+    m.tilt += m.tiltV * h;
   }
 
   // vertical: ballistic in the air, light rebounds, then the hover spring.
@@ -645,8 +653,9 @@ addEventListener('keydown', (e) => {
 // ─── pointer: drag to rotate, swipe for the visor, tap to bounce ──────────
 // The bot does not follow the cursor. Each gesture locks to an axis after a
 // few pixels: horizontal drags spin the bot (release hands the velocity to
-// the glide → spring back face-on); vertical swipes work the visor — swipe
-// up to raise it, down to lower it (once per swipe, after VISOR_SWIPE px).
+// the glide → spring back face-on); vertical swipes tilt the bot with the
+// finger (eases back level on release) and work the visor — swipe up to raise
+// it, down to lower it (once per swipe, after VISOR_SWIPE px).
 // A short still press is a tap (a bounce).
 const AXIS_LOCK_PX = 8;
 const VISOR_SWIPE_PX = 35;
@@ -676,7 +685,10 @@ canvas.addEventListener('pointermove', (e) => {
     gesture.axis = Math.abs(tx) >= Math.abs(ty) ? 'x' : 'y';
   }
   if (gesture.axis === 'y') {
-    // visor swipe: up raises it, down lowers it
+    // the bot tilts with the finger as before…
+    m.tilt = THREE.MathUtils.clamp(m.tilt + dy * DRAG_PITCH, -MAX_TILT, MAX_TILT);
+    m.tiltV = 0;
+    // …and the swipe works the visor: up raises it, down lowers it
     const ty = e.clientY - gesture.y;
     if (!gesture.fired && Math.abs(ty) >= VISOR_SWIPE_PX) {
       gesture.fired = true;
@@ -924,7 +936,7 @@ function update(dt) {
   const sway = lerp(pv.sway, cur.sway, pb);
   // lean into the spin like a ball rolling off a flick, plus landing wobble
   roll += THREE.MathUtils.clamp(-(m.dragging ? m.dragVel : m.spinV) * 0.012, -0.18, 0.18) - m.rock;
-  pitch += m.nod;
+  pitch += m.nod + m.tilt;
 
   euler.set(pitch, yaw + m.spin, roll, 'YXZ');
   viewRoll = roll;
