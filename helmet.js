@@ -402,6 +402,191 @@ function buildStitch(curve, linerR) {
   return mesh;
 }
 
+// ─── crown plate ─────────────────────────────────────────────────────────
+// A thin gloss-black plate across the crown front: the Figma visor band's
+// footprint (its outline follows the shell cut by a plane through the two
+// Figma snap points, constant Figma-band width, round ends centred on the
+// snaps), now a solid fixed part sitting close on the shell, with a moulded
+// rounded edge and the two snap studs. The glass visor clears it when raised.
+// Point on the shell at front-view (X, Y), pushed `off` along the true lathe
+// normal (∇ of x² + z² − r(y)²), so parts layered on the shell keep an even gap.
+function shellPoint(X, Y, off) {
+  const z = zShell(X, Y), e = 1e-3;
+  const dr = (rAt(Y + e) - rAt(Y - e)) / (2 * e);
+  const n = new THREE.Vector3(X, -rAt(Y) * dr, z).normalize();
+  return new THREE.Vector3(X, Y, z).addScaledVector(n, off);
+}
+
+// Robust projection onto the shell from an interior point (works over the
+// crown pole, where recomputing z from (X, Y) breaks down), and the true normal.
+const SHELL_TOP = profile[0][1];
+const SHELL_C = new THREE.Vector3(0, 0.25, 0);
+function projectToShell(Q) {
+  const d = Q.clone().sub(SHELL_C).normalize();
+  const outside = (t) => {
+    const p = SHELL_C.clone().addScaledVector(d, t);
+    return p.y >= SHELL_TOP || p.x * p.x + p.z * p.z - rAt(p.y) ** 2 > 0;
+  };
+  let a = 0, b = 3;
+  for (let k = 0; k < 40; k++) { const m = (a + b) / 2; if (outside(m)) b = m; else a = m; }
+  return SHELL_C.clone().addScaledVector(d, (a + b) / 2);
+}
+function shellNormalAt(P) {
+  const e = 1e-3, dr = (rAt(P.y + e) - rAt(P.y - e)) / (2 * e);
+  return new THREE.Vector3(P.x, -rAt(P.y) * dr, P.z).normalize();
+}
+
+// Figma "Snap L/R" centres
+const SNAP = toXY(60, 58);
+// shift: rad the whole plate (ends + snaps) is moved back over the crown,
+//        about the x axis, then re-projected onto the shell
+// back:  extra rad the centre is tipped back relative to the ends
+const PLATE = { lift: 0.012, thick: 0.016, shift: 0.5, back: 0.2, scale: 1.55, snapScale: 1.3 };   // scale: band width/tabs vs the Figma band; snapScale: studs
+const PLATE_PIVOT_Y = 0.05;
+function shiftBack(v) {                               // rotate a front point back over the crown
+  const a = -PLATE.shift, y = v.y - PLATE_PIVOT_Y;
+  return new THREE.Vector3(v.x, y * Math.cos(a) - v.z * Math.sin(a) + PLATE_PIVOT_Y, y * Math.sin(a) + v.z * Math.cos(a));
+}
+// the plate's snap anchors (right side +x), moved back and seated on the shell
+const PLATE_SNAP = projectToShell(shiftBack(shellPoint(Math.abs(SNAP[0]), SNAP[1], 0)));
+
+function buildCrownPlate() {
+  const { lift, thick } = PLATE;
+  const Xs = PLATE_SNAP.x, Ys = PLATE_SNAP.y, zs = PLATE_SNAP.z;
+  const toPlane = (Y, z) => Math.atan2(Y - Ys, z - zs);
+  const [, yMid] = toXY(164, 22), [, yTop] = toXY(164, 10), [, yBot] = toXY(164, 34);
+  const mid = projectToShell(shiftBack(shellPoint(0, yMid, 0)));
+  const th = toPlane(mid.y, mid.z) + PLATE.back;
+  const sn = Math.sin(th), cs = Math.cos(th);
+  // The hinge plane meets the shell in a closed loop through both snaps. Work
+  // in plane coordinates (X, t) — t runs from the hinge axis toward the visor —
+  // and trace the loop by angle around a point inside it.
+  const toWorld = (X, tt) => new THREE.Vector3(X, Ys + tt * sn, zs + tt * cs);
+  const f = (X, tt) => { const Y = Ys + tt * sn, z = zs + tt * cs; return X * X + z * z - rAt(Y) ** 2; };
+  const firstExit = (ox, ot, dx, dt) => {      // march out to the shell, then bisect
+    let a = 0, b = 0;
+    for (let k = 1; k < 400; k++) { b = k * 0.01; if (f(ox + dx * b, ot + dt * b) > 0) break; a = b; }
+    for (let k = 0; k < 40; k++) { const m = (a + b) / 2; if (f(ox + dx * m, ot + dt * m) > 0) b = m; else a = m; }
+    return (a + b) / 2;
+  };
+  const tF = firstExit(0, 0, 0, 1), tB = -firstExit(0, 0, 0, -1);
+  const tc = (tF + tB) / 2;
+  // the visor arc is the upper side (toward +t): sweep from the left snap,
+  // over the top, to the right snap, plus a margin for the round tabs
+  const psiR = Math.atan2(-tc, Xs);
+  let psiL = Math.atan2(-tc, -Xs);
+  if (psiL < psiR) psiL += Math.PI * 2;
+  const raw = [];
+  for (let i = 0, N = 500; i <= N; i++) {
+    const psi = (psiL + 0.45) + ((psiR - 0.45) - (psiL + 0.45)) * (i / N);
+    const dx = Math.cos(psi), dt = Math.sin(psi);
+    const rho = firstExit(0, tc, dx, dt);
+    raw.push(toWorld(dx * rho, tc + dt * rho));
+  }
+  // half-width: half the 3D distance across the Figma band at the centre
+  const W = Math.max(0.085, shellPoint(0, yTop, 0).distanceTo(shellPoint(0, yBot, 0)) / 2) * PLATE.scale;
+
+  const arc = [0];
+  for (let i = 1; i < raw.length; i++) arc.push(arc[i - 1] + raw[i].distanceTo(raw[i - 1]));
+  const sNear = (P3) => {
+    let best = 0, bd = Infinity;
+    raw.forEach((q, i) => { const d = q.distanceToSquared(P3); if (d < bd) { bd = d; best = i; } });
+    return arc[best];
+  };
+  const sL = sNear(toWorld(-Xs, 0)), sR = sNear(toWorld(Xs, 0));
+  const pointAt = (sv) => {
+    for (let i = 1; i < raw.length; i++) if (arc[i] >= sv) {
+      const f = (sv - arc[i - 1]) / (arc[i] - arc[i - 1] || 1);
+      return raw[i - 1].clone().lerp(raw[i], f);
+    }
+    return raw[raw.length - 1].clone();
+  };
+  // stadium half-width along the line: full between the snaps, round past them
+  const halfW = (sv) => {
+    const d = sv < sL ? sL - sv : sv > sR ? sv - sR : 0;
+    return Math.sqrt(Math.max(0, W * W - d * d));
+  };
+
+  const cols = 360, rows = 20;
+  const outer = [], inner = [], idx = [];
+  const rimTop = [], rimBot = [];
+  const T = new THREE.Vector3(), Nn = new THREE.Vector3(), L = new THREE.Vector3();
+  const s0 = sL - W, s1 = sR + W;
+  for (let i = 0; i < cols; i++) {
+    const u = i / (cols - 1);
+    const sv = s0 + (s1 - s0) * (0.5 - 0.5 * Math.cos(u * Math.PI));   // denser toward the round ends
+    const C = pointAt(sv);
+    T.copy(pointAt(Math.min(s1, sv + 1e-3))).sub(pointAt(Math.max(s0, sv - 1e-3))).normalize();
+    Nn.copy(shellNormalAt(C));
+    L.crossVectors(Nn, T).normalize();
+    if (L.y < 0) L.negate();
+    const hw = halfW(sv);
+    for (let j = 0; j <= rows; j++) {
+      const v = j / rows;
+      const P3 = projectToShell(C.clone().addScaledVector(L, (0.5 - v) * 2 * hw));
+      const nP = shellNormalAt(P3);
+      const o = P3.clone().addScaledVector(nP, lift + thick / 2), n = P3.clone().addScaledVector(nP, lift - thick / 2);
+      const k = (j * cols + i) * 3;
+      outer[k] = o.x; outer[k + 1] = o.y; outer[k + 2] = o.z;
+      inner[k] = n.x; inner[k + 1] = n.y; inner[k + 2] = n.z;
+      if (j === 0) rimTop.push(P3.clone().addScaledVector(nP, lift));
+      if (j === rows) rimBot.push(P3.clone().addScaledVector(nP, lift));
+    }
+  }
+  for (let j = 0; j < rows; j++) for (let i = 0; i < cols - 1; i++) {
+    const a = j * cols + i, b = a + 1, c = a + cols, d = c + 1;
+    idx.push(a, c, b, b, c, d);
+  }
+  const skin = (positions, flip) => {
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+    const ix = flip ? idx.slice() : idx;
+    if (flip) for (let k = 0; k < ix.length; k += 3) [ix[k + 1], ix[k + 2]] = [ix[k + 2], ix[k + 1]];
+    geo.setIndex(ix);
+    geo.computeVertexNormals();
+    return geo;
+  };
+  const black = new THREE.MeshPhysicalMaterial({
+    color: 0x0f1012, roughness: 0.3, clearcoat: 0.7, clearcoatRoughness: 0.12, side: THREE.DoubleSide,
+  });
+  const group = new THREE.Group();
+  group.name = 'Crown plate';
+  group.add(new THREE.Mesh(skin(outer, false), black), new THREE.Mesh(skin(inner, true), black));
+  // moulded rounded edge all the way round
+  const loop = [...rimTop, ...rimBot.reverse()].filter((p, i, arr) => i === 0 || p.distanceTo(arr[i - 1]) > 1e-4);
+  group.add(new THREE.Mesh(
+    new THREE.TubeGeometry(new THREE.CatmullRomCurve3(loop, true, 'centripetal'), 1000, thick / 2, 16, true),
+    black,
+  ));
+  return group;
+}
+
+function buildSnap(side) {
+  const g = new THREE.Group();
+  const base = PLATE_SNAP.clone(); base.x *= side;
+  const n = shellNormalAt(base);
+  g.position.copy(base).addScaledVector(n, PLATE.lift + PLATE.thick / 2);   // seated on the plate
+  g.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), n);
+  const ring = new THREE.Mesh(
+    new THREE.SphereGeometry(8 / PX, 64, 24, 0, Math.PI * 2, 0, Math.PI / 2),
+    // spun metal: sphere uv runs around the cap axis, so the anisotropic
+    // highlight streaks concentrically like a machined stud
+    new THREE.MeshPhysicalMaterial({ color: 0xc9cfd6, metalness: 0.9, roughness: 0.32, anisotropy: 0.85 }),
+  );
+  ring.rotation.x = Math.PI / 2;
+  ring.scale.set(1, 0.45, 1);
+  const core = new THREE.Mesh(
+    new THREE.SphereGeometry(3.6 / PX, 48, 16, 0, Math.PI * 2, 0, Math.PI / 2),
+    new THREE.MeshPhysicalMaterial({ color: 0x9aa3ad, metalness: 0.9, roughness: 0.38, anisotropy: 0.85 }),
+  );
+  core.rotation.x = Math.PI / 2;
+  core.scale.set(1, 0.4, 1);
+  core.position.z = 0.032;
+  g.add(ring, core);
+  g.scale.setScalar(PLATE.snapScale);
+  return g;
+}
+
 // ─── glass flip-up visor + hinge ──────────────────────────────────────────
 // A real bubble-visor mechanism: the shield is a section of a sphere centred
 // ON the hinge axis (x axis through VISOR_C, at the helmet's temples), so it
@@ -542,7 +727,8 @@ export function createHelmet() {
   const group = new THREE.Group();
   group.name = 'Orbi Soft Helmet';
   const visor = buildGlassVisor();
-  group.add(buildShell(), buildEdgeBead(), buildLiner(), visor.pivot, buildHinge(1), buildHinge(-1));
+  group.add(buildShell(), buildEdgeBead(), buildLiner(), buildCrownPlate(), buildSnap(-1), buildSnap(1),
+    visor.pivot, buildHinge(1), buildHinge(-1));
 
   // hinge motion: a weighted spring with a little detent bounce at each end
   // (user toggles), or a softer one for the automatic lower after the intro —

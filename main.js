@@ -3,9 +3,9 @@
 // The body is a rigid ball: it never squashes or deforms. All motion is
 // whole-body — a light hover spring, airy hops with a couple of rebounds and
 // a nod/rock wobble kicked by each landing. The bot ignores the cursor; press
-// and drag to rotate it freely (it follows the pointer 1:1 and glides on with
-// momentum when released, then springs back to face the camera; vertical drag
-// tilts it and eases back to level).
+// and drag sideways to rotate it freely (it follows the pointer 1:1 and glides
+// on with momentum when released, then springs back to face the camera);
+// swipe up / down to raise / lower the visor.
 //
 // The face is not geometry: each state is drawn into a canvas in Figma
 // coordinates and sampled in the shader by the vertex's rest direction.
@@ -19,8 +19,6 @@ const HOVER_Y = 0;              // resting centre height while floating
 const FLOOR_Y = -1.18;          // Figma: body bottom 270, contact shadow 288 → 0.15R gap
 const GRAVITY = 17;              // low: a light, floaty toy ball
 const DRAG_YAW = 0.0105;        // rad per px of horizontal drag (~360° over 600px)
-const DRAG_PITCH = 0.006;       // rad per px of vertical drag
-const MAX_TILT = 0.5;
 const BASE_PITCH = -0.2;        // tip the face up toward the camera
 
 const STATES = [
@@ -471,7 +469,6 @@ const m = {
   x: 0, vx: 0,
   spin: 0, spinV: 0,                  // yaw: set by dragging; after release glides, then springs home
   homing: false, home: 0, glideF: 0,  // home = front-facing turn it settles into; glideF = coast friction
-  tilt: 0, tiltV: 0,                  // drag pitch, eases back to level on release
   dragging: false, dragVel: 0, lastDir: 1,
   nod: 0, nodV: 0, rock: 0, rockV: 0, // pitch / roll wobble kicked by landings
   shake: 0,                           // error tremble amplitude
@@ -521,9 +518,6 @@ function stepMotion(h) {
       }
     }
     m.spin += m.spinV * h;
-    // tilt eases back to level (slightly under-damped)
-    m.tiltV += (-70 * m.tilt - 11 * m.tiltV) * h;
-    m.tilt += m.tiltV * h;
   }
 
   // vertical: ballistic in the air, light rebounds, then the hover spring.
@@ -648,14 +642,18 @@ addEventListener('keydown', (e) => {
   if (e.key === 'ArrowRight') nudge(1);
 });
 
-// ─── pointer: drag to rotate, tap to bounce ───────────────────────────────
-// The bot does not follow the cursor. Press and drag anywhere to turn it:
-// horizontal drag spins it freely, vertical drag tilts it (clamped). Release
-// hands the drag velocity over to the glide; a short still press is a tap.
+// ─── pointer: drag to rotate, swipe for the visor, tap to bounce ──────────
+// The bot does not follow the cursor. Each gesture locks to an axis after a
+// few pixels: horizontal drags spin the bot (release hands the velocity to
+// the glide → spring back face-on); vertical swipes work the visor — swipe
+// up to raise it, down to lower it (once per swipe, after VISOR_SWIPE px).
+// A short still press is a tap (a bounce).
+const AXIS_LOCK_PX = 8;
+const VISOR_SWIPE_PX = 35;
 let gesture = null;
 
 canvas.addEventListener('pointerdown', (e) => {
-  gesture = { x: e.clientX, y: e.clientY, lx: e.clientX, ly: e.clientY, lt: performance.now(), t: performance.now(), moved: 0 };
+  gesture = { x: e.clientX, y: e.clientY, lx: e.clientX, ly: e.clientY, lt: performance.now(), t: performance.now(), moved: 0, axis: null, fired: false };
   if (intro.active) { const sp = m.spin; endIntro(); m.spin = sp; }   // grab takes over mid-turn
   m.dragging = true;
   m.homing = false;
@@ -672,11 +670,22 @@ canvas.addEventListener('pointermove', (e) => {
   const dt = Math.max(1, now - gesture.lt) / 1000;
   gesture.lx = e.clientX; gesture.ly = e.clientY; gesture.lt = now;
   gesture.moved = Math.max(gesture.moved, Math.hypot(e.clientX - gesture.x, e.clientY - gesture.y));
-  if (gesture.moved < 4) return;                       // let taps stay taps
+  if (!gesture.axis) {
+    if (gesture.moved < AXIS_LOCK_PX) return;          // let taps stay taps
+    const tx = e.clientX - gesture.x, ty = e.clientY - gesture.y;
+    gesture.axis = Math.abs(tx) >= Math.abs(ty) ? 'x' : 'y';
+  }
+  if (gesture.axis === 'y') {
+    // visor swipe: up raises it, down lowers it
+    const ty = e.clientY - gesture.y;
+    if (!gesture.fired && Math.abs(ty) >= VISOR_SWIPE_PX) {
+      gesture.fired = true;
+      setVisor(ty > 0);
+    }
+    return;
+  }
   if (state === 'sleepy') setState('idle', { quiet: true });
   m.spin += dx * DRAG_YAW;
-  m.tilt = THREE.MathUtils.clamp(m.tilt + dy * DRAG_PITCH, -MAX_TILT, MAX_TILT);
-  m.tiltV = 0;
   // smoothed angular velocity, used for the release glide and the lean
   m.dragVel += ((dx * DRAG_YAW) / dt - m.dragVel) * 0.35;
   if (dx) m.lastDir = Math.sign(dx);
@@ -692,18 +701,12 @@ function endGesture() {
   m.spinV = idle > 80 ? 0 : THREE.MathUtils.clamp(m.dragVel, -14, 14);
   m.dragVel = 0;
   canvas.classList.remove('grabbing');
-  if (g.moved < 6 && performance.now() - g.t < 300) tap(g);
+  if (g.moved < 6 && performance.now() - g.t < 300) tap();
 }
 canvas.addEventListener('pointerup', endGesture);
 canvas.addEventListener('pointercancel', endGesture);
 
-const raycaster = new THREE.Raycaster();
-function tap(g) {
-  // clicking the visor flips it
-  const r = canvas.getBoundingClientRect();
-  raycaster.setFromCamera(new THREE.Vector2(((g.x - r.left) / r.width) * 2 - 1, -((g.y - r.top) / r.height) * 2 + 1), camera);
-  const hit = raycaster.intersectObjects([...helmet.visorPickables, body], false)[0];
-  if (hit && hit.object !== body) { toggleVisor(); return; }
+function tap() {
   if (state === 'sleepy') { setState('idle'); return; }
   hop(2.6);
   m.nodV += 1.2;
@@ -921,7 +924,7 @@ function update(dt) {
   const sway = lerp(pv.sway, cur.sway, pb);
   // lean into the spin like a ball rolling off a flick, plus landing wobble
   roll += THREE.MathUtils.clamp(-(m.dragging ? m.dragVel : m.spinV) * 0.012, -0.18, 0.18) - m.rock;
-  pitch += m.nod + m.tilt;
+  pitch += m.nod;
 
   euler.set(pitch, yaw + m.spin, roll, 'YXZ');
   viewRoll = roll;
