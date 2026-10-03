@@ -224,6 +224,23 @@ function tex(canvas, srgb) {
   return t;
 }
 
+// ─── accent colour (theme) ────────────────────────────────────────────────
+// The helmet's yellow paint (crown, swooshes) and the stitch thread follow
+// one accent colour. The artwork stays drawn in Figma yellow; the shell
+// shader swaps any yellow pixel for the accent (black, silver and the white
+// back logo are untouched), so a theme change needs no canvas redraw.
+const ACCENT = { value: new THREE.Color(0xfeee00) };
+const LOGO_WHITE = { value: 0 };                    // 0 = black front wordmark (noon), 1 = white
+let stitchMat = null;
+function applyAccent(c) {
+  ACCENT.value.copy(c);
+  if (stitchMat) {
+    stitchMat.color.copy(c).multiplyScalar(0.92);
+    stitchMat.emissive.copy(c).multiplyScalar(0.06);
+    stitchMat.sheenColor.copy(c).lerp(new THREE.Color(1, 1, 1), 0.55);
+  }
+}
+
 // ─── shell ────────────────────────────────────────────────────────────────
 function buildShell() {
   // bottom → top so the lathe's faces point outward
@@ -235,6 +252,8 @@ function buildShell() {
     artFront: { value: tex(artCanvas(true), true) },
     artBack: { value: tex(artCanvas(false), true) },
     maskMap: { value: tex(maskCanvas(), false) },
+    uAccent: ACCENT,
+    uLogoWhite: LOGO_WHITE,
   };
   mat.onBeforeCompile = (sh) => {
     Object.assign(sh.uniforms, uniforms);
@@ -244,6 +263,8 @@ function buildShell() {
     sh.fragmentShader = sh.fragmentShader
       .replace('#include <common>', `#include <common>
 uniform sampler2D artFront, artBack, maskMap;
+uniform vec3 uAccent;
+uniform float uLogoWhite;
 varying vec3 vObj;
 float metalMask = 0.0;
 ${SURFACE_GLSL}`)
@@ -255,13 +276,19 @@ vec3 art = vObj.z > 0.0 ? texture2D(artFront, auv).rgb : texture2D(artBack, auv)
 metalMask = gl_FrontFacing ? mk.r : 0.0;
 // decal mask holds both logos at different heights: front wordmark high, back logo low
 float decal = !gl_FrontFacing ? 0.0 : (vObj.z > 0.0 ? mk.b * step(0.5, vObj.y) : mk.b * step(vObj.y, 0.3));
+// theme: replace the Figma yellow with the accent (only strongly yellow pixels)
+float yellowness = clamp((min(art.r, art.g) - art.b) * 1.6, 0.0, 1.0);
+art = mix(art, uAccent, yellowness);
+// theme: front wordmark printed white instead of black
+float frontLogo = vObj.z > 0.0 ? decal * uLogoWhite : 0.0;
+art = mix(art, vec3(0.94), frontLogo);
 diffuseColor.rgb = gl_FrontFacing ? art : vec3(0.025);
 // paint detail: orange peel (in the clear coat) + soft handling smudges
 float peel = vnoise(vObj * 34.0) * 0.7 + vnoise(vObj * 61.0) * 0.3;
 float smudge = smoothstep(0.35, 0.8, fbm3(vObj * 3.2 + 7.0));`)
       .replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>
 // the white back logo is printed ink: keep it reading white on the shaded back
-totalEmissiveRadiance += (vObj.z < 0.0 ? decal : 0.0) * art * 0.16;`)
+totalEmissiveRadiance += ((vObj.z < 0.0 ? decal : 0.0) + frontLogo) * art * 0.16;`)
       .replace('#include <metalnessmap_fragment>', `#include <metalnessmap_fragment>
 metalnessFactor = mix(metalnessFactor, 0.35, metalMask);`)
       .replace('#include <roughnessmap_fragment>', `#include <roughnessmap_fragment>
@@ -383,6 +410,7 @@ function buildStitch(curve, linerR) {
     color: 0xe9db00, roughness: 0.7, emissive: 0x3a3500,
     sheen: 1, sheenColor: new THREE.Color(0xfff6a0), sheenRoughness: 0.35,   // fibrous thread
   });
+  stitchMat = mat;                                  // recoloured with the accent
   const mesh = new THREE.InstancedMesh(geo, mat, n + 1);
   const front = new THREE.Vector3(0, 0, 1);
   const Y = new THREE.Vector3(0, 1, 0);
@@ -744,6 +772,8 @@ export function createHelmet() {
     get visorDown() { return v.target === 0; },
     setVisorDown(down, { slow = false } = {}) { v.target = down ? 0 : VISOR_UP; v.spring = slow ? SLOW : SNAPPY; },
     toggleVisor() { v.target = v.target === 0 ? VISOR_UP : 0; v.spring = SNAPPY; return v.target === 0; },
+    setAccent(color) { applyAccent(color); },
+    setLogoWhite(v) { LOGO_WHITE.value = v; },
     update(dt) {
       v.va += (v.spring.k * (v.target - v.a) - v.spring.d * v.va) * dt;
       v.a += v.va * dt;

@@ -303,6 +303,8 @@ const uniforms = {
   uTint: { value: new THREE.Color(0xf2dc00) },
   uRimColor: { value: new THREE.Color(0xfffbe0) },
   uRim: { value: 0.18 },
+  uShade: { value: new THREE.Color(0.9, 0.86, 0.74) },   // colour of the helmet shade (themed)
+  uWhiten: { value: 0.55 },                              // strength of the brand → white gradient
 };
 // Helmet → ball occlusion, evaluated on the ball's rest sphere (the helmet is
 // a child of the body, so they share that space). The face window is the
@@ -312,7 +314,7 @@ const uniforms = {
 //   • inside the window: dark at the liner, opening to full light ~0.34 in
 //   • under the shell: deep shade (the inside of the helmet)
 //   • below the shell rim (y −0.55): back into the light over ~0.35
-// The shadow is a touch warm so it reads as yellow in shade, not grey.
+// The shadow is tinted by the theme (uShade) so it reads as the body colour in shade, not grey.
 const HELMET_AO_GLSL = `
 {
   vec3 rp = normalize(vRest);
@@ -322,7 +324,7 @@ const HELMET_AO_GLSL = `
   float faceAO = mix(0.46, 1.0, smoothstep(0.0, 0.34, -sd));
   float ao = (rp.z > 0.0 && sd < 0.0) ? faceAO : 0.42;
   ao = max(ao, mix(0.42, 1.0, smoothstep(-0.5, -0.88, rp.y)));   // below the rim
-  outgoingLight *= ao * mix(vec3(0.9, 0.86, 0.74), vec3(1.0), ao);
+  outgoingLight *= ao * mix(uShade, vec3(1.0), ao);
 }`;
 
 bodyMat.onBeforeCompile = (sh) => {
@@ -336,11 +338,21 @@ uniform sampler2D faceMap;
 uniform vec3 uTint;
 uniform vec3 uRimColor;
 uniform float uRim;
+uniform vec3 uShade;
+uniform float uWhiten;
 varying vec3 vRest;
 ${SURFACE_GLSL}`)
     .replace('#include <color_fragment>', `#include <color_fragment>
 float lower = smoothstep(0.25, -0.95, vRest.y) * smoothstep(-0.6, 0.4, vRest.z);
 diffuseColor.rgb = mix(diffuseColor.rgb, uTint, lower * 0.6);
+// soft brand → white gradient, top to bottom over the visible ball: pure brand colour
+// where it comes out from under the helmet (y ≈ 0.45), evenly lightening to white at
+// the bottom. Part goes in the paint, part on top of the lighting (otherwise the
+// shaded underside turns the white into dusty grey).
+// Mixed in gamma space (sqrt/square): in linear light even a few % of white floods dark brand reds.
+float whiten = clamp((0.45 - vRest.y) / 1.45, 0.0, 1.0) * uWhiten;
+vec3 gd = mix(sqrt(diffuseColor.rgb), vec3(1.0), whiten * 0.5);
+diffuseColor.rgb = gd * gd;
 vec2 fuv = vRest.xy / (2.0 * ${FACE_EXTENT.toFixed(3)}) + 0.5;
 vec4 face = texture2D(faceMap, fuv);
 float faceA = face.a * smoothstep(0.15, 0.4, vRest.z)
@@ -370,6 +382,10 @@ material.specularColorBlended *= 1.0 - 0.6 * faceA;`)
 totalEmissiveRadiance *= 1.0 - faceA;`)
     .replace('#include <opaque_fragment>', `float fres = pow(1.0 - saturate(dot(normal, normalize(vViewPosition))), 3.0);
 outgoingLight += uRimColor * fres * uRim * (1.0 - faceA);
+// (only where the surface faces the camera, so the silhouette stays shaded against the white page)
+float facing = saturate(dot(normal, normalize(vViewPosition)));
+vec3 go = mix(sqrt(max(outgoingLight, 0.0)), vec3(0.965), whiten * 0.7 * facing * (1.0 - faceA));
+outgoingLight = go * go;
 ${HELMET_AO_GLSL}
 #include <opaque_fragment>`);
 };
@@ -529,7 +545,7 @@ function nudge(dir) {
 
 function stepMotion(h) {
   // yaw: the pointer drives it while held; after release it returns face-on
-  if (!m.dragging && !intro.active) {
+  if (!m.dragging && !intro.active && !colourSpin.active) {
     // after a release (see planReturn): coast on the flick's momentum with a
     // friction tuned to come to rest on the chosen front-facing turn, then a
     // soft spring finishes the settle (or brings a slow release straight back)
@@ -681,10 +697,129 @@ function toggleVisor() {
 }
 visorBtn.addEventListener('click', toggleVisor);
 syncVisor();
+
+// ─── colour themes ────────────────────────────────────────────────────────
+// One button cycles the bot's colour: the ball (base + lower tint) and the
+// helmet's paint + stitching (accent) change together and glide over ~0.5 s.
+// The last choice is remembered per browser (a convenience only).
+const THEMES = [
+  // brand tiles from Figma "colour options" (1107:115295); accent = the tile colour
+  { name: 'noon',      body: 0xffeb45, tint: 0xf2dc00, accent: 0xfeee00, sheen: 0xfff6c8, rim: 0xfffbe0, shade: [0.9, 0.86, 0.74] },
+  { name: 'supermall', body: 0x2526cc, tint: 0x1d1ea0, accent: 0x2122b8 },
+  { name: 'Minutes',   body: 0xd12b28, tint: 0xa3221f, accent: 0xd12b28 },
+  { name: 'Jahez',     body: 0xf8113a, tint: 0xc90628, accent: 0xf8113a },
+  { name: 'noon Food', body: 0xe01858, tint: 0xaf1345, accent: 0xe01858 },
+  { name: 'NowNow',    body: 0xf33a01, tint: 0xbe2d01, accent: 0xf33a01 },
+];
+// Sheen, rim light and helmet-shade colour follow the body; noon keeps its
+// hand-tuned originals, the rest derive them the same way.
+const WHITE = new THREE.Color(1, 1, 1);
+// The brand tiles are flat-graphic saturated; on the 3D ball they read too loud,
+// so every theme except noon is toned down (HSL saturation × BRAND_SAT).
+const BRAND_SAT = 0.8;
+function themeColor(th, hex) {
+  const c = new THREE.Color(hex);
+  if (th.name === 'noon') return c;
+  const hsl = c.getHSL({}, THREE.SRGBColorSpace);
+  return c.setHSL(hsl.h, hsl.s * BRAND_SAT, hsl.l, THREE.SRGBColorSpace);
+}
+function toColors(th) {
+  const body = themeColor(th, th.body), tint = themeColor(th, th.tint);
+  const t = [(th.tint >> 16 & 255) / 255, (th.tint >> 8 & 255) / 255, (th.tint & 255) / 255];
+  const mx = Math.max(...t);
+  return {
+    body, tint, accent: themeColor(th, th.accent),
+    sheen: th.sheen != null ? new THREE.Color(th.sheen) : WHITE.clone().lerp(body, 0.3),
+    rim: th.rim != null ? new THREE.Color(th.rim) : WHITE.clone().lerp(body, 0.17),
+    shade: th.shade ? new THREE.Color(...th.shade) : new THREE.Color(...t.map((c) => 0.9 - 0.16 * (1 - c / mx))),
+    logo: th.name === 'noon' ? 0 : 1,                 // front wordmark: black on noon yellow, white on the rest
+  };
+}
+let themeIdx = 0;
+try { themeIdx = Math.min(THEMES.length - 1, Math.max(0, +localStorage.getItem('orbi.theme') || 0)); } catch {}
+const themeCur = toColors(THEMES[themeIdx]);
+let themeTarget = toColors(THEMES[themeIdx]);
+function applyTheme() {
+  bodyMat.color.copy(themeCur.body);
+  uniforms.uTint.value.copy(themeCur.tint);
+  uniforms.uRimColor.value.copy(themeCur.rim);
+  uniforms.uShade.value.copy(themeCur.shade);
+  bodyMat.sheenColor.copy(themeCur.sheen);
+  bodyMat.emissive.copy(themeCur.tint).multiplyScalar(0.008);   // ≈ the original 0x141000 for yellow
+  helmet.setAccent(themeCur.accent);
+  helmet.setLogoWhite(themeCur.logo);
+}
+let themeRate = 7;                                    // blend speed (1/s); quicker while it swaps mid-spin
+function updateTheme(dt) {
+  const k = 1 - Math.exp(-dt * themeRate);
+  for (const key of ['body', 'tint', 'accent', 'sheen', 'rim', 'shade']) themeCur[key].lerp(themeTarget[key], k);
+  themeCur.logo += (themeTarget.logo - themeCur.logo) * k;
+  applyTheme();
+}
+const sep2 = document.createElement('span');
+sep2.className = 'sep';
+nav.appendChild(sep2);
+const colourBtn = document.createElement('button');
+colourBtn.type = 'button';
+colourBtn.className = 'colour';
+colourBtn.title = 'Change colour (C)';
+colourBtn.innerHTML = '<i class="swatch"></i><span></span>';
+nav.appendChild(colourBtn);
+function syncColour() {
+  const th = THEMES[themeIdx];
+  colourBtn.querySelector('.swatch').style.background = '#' + themeColor(th, th.accent).getHexString();
+  colourBtn.querySelector('span').textContent = th.name;
+  colourBtn.setAttribute('aria-label', `Colour: ${th.name}. Change colour`);
+}
+// Changing colour turns the bot a full 360° (to its left, like the intro) with
+// a little hop; the new colour swaps in while it faces away, so it comes back
+// round already recoloured. Clicking again mid-turn adds another turn.
+const COLOUR_SPIN = { dur: 0.95, swapAt: 0.36 };       // swap once ~130° round (back to camera)
+const colourSpin = { active: false, t: 0, from: 0, to: 0, pending: null };
+function cycleColour() {
+  themeIdx = (themeIdx + 1) % THEMES.length;
+  try { localStorage.setItem('orbi.theme', String(themeIdx)); } catch {}
+  syncColour();
+  if (intro.active) endIntro();
+  const TAU = Math.PI * 2;
+  const base = colourSpin.active ? colourSpin.to : Math.round(m.spin / TAU) * TAU;
+  Object.assign(colourSpin, { active: true, t: 0, from: m.spin, to: base - TAU, pending: toColors(THEMES[themeIdx]) });
+  m.homing = false;
+  hop(1.8);
+}
+function swapColourNow() {
+  if (!colourSpin.pending) return;
+  themeTarget = colourSpin.pending;
+  colourSpin.pending = null;
+  themeRate = 30;                                     // near-instant while its back is turned (no muddy mid-blend)
+}
+function updateColourSpin(dt) {
+  if (!colourSpin.active) return;
+  colourSpin.t += dt;
+  const p = Math.min(1, colourSpin.t / COLOUR_SPIN.dur);
+  const prev = m.spin;
+  const e = easeOutBack(p, 1.1);                      // quick start, a soft overshoot as it comes face-on
+  m.spin = colourSpin.from + (colourSpin.to - colourSpin.from) * e;
+  m.spinV = dt > 0 ? (m.spin - prev) / dt : 0;        // drives the roll lean, like a flick
+  if (e >= COLOUR_SPIN.swapAt) swapColourNow();
+  if (p >= 1) endColourSpin();
+}
+function endColourSpin() {
+  if (!colourSpin.active) return;
+  swapColourNow();
+  colourSpin.active = false;
+  themeRate = 7;
+  m.spinV = 0;
+  m.homing = true; m.home = colourSpin.to; m.glideF = 0;   // the yaw spring finishes the settle
+}
+colourBtn.addEventListener('click', cycleColour);
+syncColour();
+applyTheme();
 addEventListener('keydown', (e) => {
   const n = parseInt(e.key, 10);
   if (n >= 1 && n <= STATES.length) { endIntro(); setState(STATES[n - 1].key); }
   if (e.key === 'v' || e.key === 'V') toggleVisor();
+  if (e.key === 'c' || e.key === 'C') cycleColour();
   if (e.key === 'ArrowLeft') nudge(-1);
   if (e.key === 'ArrowRight') nudge(1);
 });
@@ -703,6 +838,7 @@ let gesture = null;
 canvas.addEventListener('pointerdown', (e) => {
   gesture = { x: e.clientX, y: e.clientY, lx: e.clientX, ly: e.clientY, lt: performance.now(), t: performance.now(), moved: 0, axis: null, fired: false };
   if (intro.active) { const sp = m.spin; endIntro(); m.spin = sp; }   // grab takes over mid-turn
+  if (colourSpin.active) { const sp = m.spin; endColourSpin(); m.spin = sp; }
   m.dragging = true;
   m.homing = false;
   m.spinV = 0;
@@ -961,12 +1097,14 @@ function update(dt) {
   else m.hoverY = HOVER_Y + Math.sin(t * 1.6) * (state === 'working' ? 0.02 : 0.05);
 
   updateIntro(dt);
+  updateColourSpin(dt);
   acc += dt;
   while (acc >= H) { stepMotion(H); acc -= H; }
 
   // state-specific pose (self-driven — never from the cursor)
   updateGaze(dt);
   helmet.update(dt);
+  updateTheme(dt);
   // state pose, crossfaded from the previous state's pose after a change
   poseBlend = Math.min(1, poseBlend + dt / POSE_BLEND_S);
   prevStateTime += dt;
@@ -1040,4 +1178,4 @@ setState('idle', { quiet: true });
 requestAnimationFrame(frame);
 
 // small hook for automated checks
-window.orbi = { setState, nudge, helmet, toggleVisor, advance: update, faceCanvas, intro, gaze, replay: () => { setState('idle', { quiet: true }); helmet.setVisorDown(false); syncVisor(); Object.assign(intro, { active: true, t: 0, scale: 0, greeted: false }); }, get state() { return state; }, motion: m, renderer, scene, camera };
+window.orbi = { setState, nudge, cycleColour, get theme() { return THEMES[themeIdx].name; }, helmet, toggleVisor, advance: update, faceCanvas, intro, gaze, replay: () => { setState('idle', { quiet: true }); helmet.setVisorDown(false); syncVisor(); Object.assign(intro, { active: true, t: 0, scale: 0, greeted: false }); }, get state() { return state; }, motion: m, bodyUniforms: uniforms, renderer, scene, camera };

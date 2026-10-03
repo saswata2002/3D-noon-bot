@@ -24,9 +24,16 @@ then visit http://localhost:8000.
   ← / → give it a spin.
 - **Visor** — hinged smoked-glass flip-up visor (swipe up/down on the bot, the bar button, or V). It swings
   around the hinge axis at the temples without clipping, and drops down after the intro.
+- **Colour** — the swatch button at the end of the bar (or C) spins the bot a full 360° and
+  swaps the colour while its back is turned. It cycles the brand colours from
+  the Figma "colour options" section: noon, supermall, Minutes, Jahez, noon Food, NowNow
+  (all but noon toned down to 80% saturation so they don't shout on the 3D ball).
+  The ball (including its sheen, rim light and helmet shade), the helmet artwork and the
+  stitching blend to the new colour, and the front noon wordmark turns white on every colour
+  except noon yellow; the choice is remembered per browser.
 - **Helmet** (`helmet.js`) — shell, artwork, liner + stitching built from the Figma
   component's SVG paths; glass visor + hinges; procedural paint, leather and metal detail.
-- **Shading** — studio environment lighting, analytic helmet-on-ball occlusion, and the
+- **Shading** — a soft brand-colour → white gradient down the ball, studio environment lighting, analytic helmet-on-ball occlusion, and the
   Figma drop / contact shadows.
 
 ## Files
