@@ -15,7 +15,7 @@ then visit http://localhost:8000.
 
 ## What's in it
 
-- **States** — Idle, Greeting, Working, Error, Dizzy, Sleepy (bar at the bottom, or keys 1–6).
+- **States** — Idle, Greeting, Working, Error, Dizzy, Sleepy, Angry (bar at the bottom, or keys 1–7).
   Faces morph smoothly between states; Idle slowly glances left, right, up-left, up-right.
 - **Intro** — grows in place with a 360° turn, greets with a smile, settles into Idle, then
   lowers its visor.
