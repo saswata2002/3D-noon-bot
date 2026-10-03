@@ -152,7 +152,7 @@ const arcPts = (cx, cy, r, a0, a1) => Array.from({ length: NP }, (_, i) => {
 });
 // left eye per face (Figma px, eye centre around x −32)
 const LEFT_EYE = {
-  pill:     () => { const l = linePts(-32, -24, -32, 10); return { a: l, b: l, w: 28 }; },          // 28 × 62 pill
+  pill:     () => { const l = linePts(-32, -20, -32, 6); return { a: l, b: l, w: 28 }; },           // 28 × 54 pill (Figma 62, shortened)
   greeting: () => { const l = arcPts(-32, -7, 12.5, Math.PI + 0.38, Math.PI * 2 - 0.38); return { a: l, b: l, w: 6.5 }; },
   error:    () => { const l = linePts(-45, -6, -19, -6); return { a: l, b: l, w: 9 }; },
   dizzy:    () => ({ a: linePts(-44, -16, -22, 6), b: linePts(-22, -16, -44, 6), w: 7.5 }),
@@ -245,7 +245,7 @@ function drawFace(spec, open = 1) {
     const h = y1 - y0 + e.w;                         // visual height including the round caps
     fctx.save();
     // blink: squash the eye vertically about its centre (pill eyes only)
-    const sq = lerp(1, Math.max(open, 5 / 62), spec.blink);
+    const sq = lerp(1, Math.max(open, 5 / 54), spec.blink);
     fctx.translate(0, Y(cy)); fctx.scale(1, sq); fctx.translate(0, -Y(cy));
     // bottom lip — the 2px white drop shadow on the Figma eyes
     fctx.shadowColor = `rgba(255,255,236,${(0.75 * spec.lip).toFixed(3)})`;
@@ -271,7 +271,7 @@ function drawFace(spec, open = 1) {
     // glint
     const ga = 0.85 * k * THREE.MathUtils.clamp((open - 0.45) * 3, 0, 1);
     if (ga > 0.01) {
-      const hh = h * Math.max(open, 5 / 62);
+      const hh = h * Math.max(open, 5 / 54);
       fctx.save();
       fctx.globalAlpha = ga;
       fctx.filter = `blur(${0.6 * S}px)`;
@@ -289,9 +289,9 @@ function drawFace(spec, open = 1) {
 // ─── body material ────────────────────────────────────────────────────────
 const bodyMat = new THREE.MeshPhysicalMaterial({
   color: 0xffeb45,
-  roughness: 0.58,
-  clearcoat: 0.18,
-  clearcoatRoughness: 0.42,
+  roughness: 0.5,
+  clearcoat: 0.6,                // lacquered candy finish: a crisp softbox highlight over the satin base
+  clearcoatRoughness: 0.26,     // soft enough that the key light blooms instead of a pin-point hotspot
   specularIntensity: 0.75,
   sheen: 0.3,
   sheenColor: new THREE.Color(0xfff6c8),
@@ -302,9 +302,10 @@ const uniforms = {
   faceMap: { value: faceTex },
   uTint: { value: new THREE.Color(0xf2dc00) },
   uRimColor: { value: new THREE.Color(0xfffbe0) },
-  uRim: { value: 0.18 },
+  uRim: { value: 0.3 },
+  uGlowColor: { value: new THREE.Color(0xffeb45) },     // inner glow, in the body colour (themed)
+  uGlow: { value: 0.16 },
   uShade: { value: new THREE.Color(0.9, 0.86, 0.74) },   // colour of the helmet shade (themed)
-  uWhiten: { value: 0.55 },                              // strength of the brand → white gradient
 };
 // Helmet → ball occlusion, evaluated on the ball's rest sphere (the helmet is
 // a child of the body, so they share that space). The face window is the
@@ -339,20 +340,13 @@ uniform vec3 uTint;
 uniform vec3 uRimColor;
 uniform float uRim;
 uniform vec3 uShade;
-uniform float uWhiten;
+uniform vec3 uGlowColor;
+uniform float uGlow;
 varying vec3 vRest;
 ${SURFACE_GLSL}`)
     .replace('#include <color_fragment>', `#include <color_fragment>
 float lower = smoothstep(0.25, -0.95, vRest.y) * smoothstep(-0.6, 0.4, vRest.z);
 diffuseColor.rgb = mix(diffuseColor.rgb, uTint, lower * 0.6);
-// soft brand → white gradient, top to bottom over the visible ball: pure brand colour
-// where it comes out from under the helmet (y ≈ 0.45), evenly lightening to white at
-// the bottom. Part goes in the paint, part on top of the lighting (otherwise the
-// shaded underside turns the white into dusty grey).
-// Mixed in gamma space (sqrt/square): in linear light even a few % of white floods dark brand reds.
-float whiten = clamp((0.45 - vRest.y) / 1.45, 0.0, 1.0) * uWhiten;
-vec3 gd = mix(sqrt(diffuseColor.rgb), vec3(1.0), whiten * 0.5);
-diffuseColor.rgb = gd * gd;
 vec2 fuv = vRest.xy / (2.0 * ${FACE_EXTENT.toFixed(3)}) + 0.5;
 vec4 face = texture2D(faceMap, fuv);
 float faceA = face.a * smoothstep(0.15, 0.4, vRest.z)
@@ -379,13 +373,12 @@ material.clearcoat *= 1.0 - 0.5 * faceA;
 material.specularColor *= 1.0 - 0.6 * faceA;
 material.specularColorBlended *= 1.0 - 0.6 * faceA;`)
     .replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>
+// premium inner glow: the colour seems lit from within, strongest where the ball faces the camera
+float facing = saturate(dot(normal, normalize(vViewPosition)));
+totalEmissiveRadiance += uGlowColor * uGlow * facing * facing;
 totalEmissiveRadiance *= 1.0 - faceA;`)
     .replace('#include <opaque_fragment>', `float fres = pow(1.0 - saturate(dot(normal, normalize(vViewPosition))), 3.0);
 outgoingLight += uRimColor * fres * uRim * (1.0 - faceA);
-// (only where the surface faces the camera, so the silhouette stays shaded against the white page)
-float facing = saturate(dot(normal, normalize(vViewPosition)));
-vec3 go = mix(sqrt(max(outgoingLight, 0.0)), vec3(0.965), whiten * 0.7 * facing * (1.0 - faceA));
-outgoingLight = go * go;
 ${HELMET_AO_GLSL}
 #include <opaque_fragment>`);
 };
@@ -704,7 +697,7 @@ syncVisor();
 // The last choice is remembered per browser (a convenience only).
 const THEMES = [
   // brand tiles from Figma "colour options" (1107:115295); accent = the tile colour
-  { name: 'noon',      body: 0xffeb45, tint: 0xf2dc00, accent: 0xfeee00, sheen: 0xfff6c8, rim: 0xfffbe0, shade: [0.9, 0.86, 0.74] },
+  { name: 'noon',      body: 0xffeb45, tint: 0xf2dc00, accent: 0xfeee00, sheen: 0xfff6c8, shade: [0.9, 0.86, 0.74] },
   { name: 'supermall', body: 0x2526cc, tint: 0x1d1ea0, accent: 0x2122b8 },
   { name: 'Minutes',   body: 0xd12b28, tint: 0xa3221f, accent: 0xd12b28 },
   { name: 'Jahez',     body: 0xf8113a, tint: 0xc90628, accent: 0xf8113a },
@@ -730,7 +723,7 @@ function toColors(th) {
   return {
     body, tint, accent: themeColor(th, th.accent),
     sheen: th.sheen != null ? new THREE.Color(th.sheen) : WHITE.clone().lerp(body, 0.3),
-    rim: th.rim != null ? new THREE.Color(th.rim) : WHITE.clone().lerp(body, 0.17),
+    rim: WHITE.clone().lerp(body, 0.55),               // brand-tinted edge glow
     shade: th.shade ? new THREE.Color(...th.shade) : new THREE.Color(...t.map((c) => 0.9 - 0.16 * (1 - c / mx))),
     logo: th.name === 'noon' ? 0 : 1,                 // front wordmark: black on noon yellow, white on the rest
   };
@@ -744,6 +737,7 @@ function applyTheme() {
   uniforms.uTint.value.copy(themeCur.tint);
   uniforms.uRimColor.value.copy(themeCur.rim);
   uniforms.uShade.value.copy(themeCur.shade);
+  uniforms.uGlowColor.value.copy(themeCur.body);
   bodyMat.sheenColor.copy(themeCur.sheen);
   bodyMat.emissive.copy(themeCur.tint).multiplyScalar(0.008);   // ≈ the original 0x141000 for yellow
   helmet.setAccent(themeCur.accent);
@@ -906,7 +900,7 @@ const easeInQuad = (x) => x * x;
 const easeOutCubicF = (x) => 1 - (1 - x) ** 3;
 // The "closed eye": a short horizontal stroke, exactly the size of a pill eye
 // squashed shut (28 wide × ~7 tall), so the two can hand over seamlessly.
-const SQUASH = 7.1 / 62;
+const SQUASH = 7.1 / 54;
 const CLOSED = (() => {
   const l = linePts(-42.5, -7, -21.5, -7);
   return { eyes: [{ a: l, b: l, w: 7 }, { a: mirror(l), b: mirror(l), w: 7 }], mouth: MOUTH.none(), glint: 0, lip: 1, cheeks: 0, blink: 0 };
@@ -1178,4 +1172,4 @@ setState('idle', { quiet: true });
 requestAnimationFrame(frame);
 
 // small hook for automated checks
-window.orbi = { setState, nudge, cycleColour, get theme() { return THEMES[themeIdx].name; }, helmet, toggleVisor, advance: update, faceCanvas, intro, gaze, replay: () => { setState('idle', { quiet: true }); helmet.setVisorDown(false); syncVisor(); Object.assign(intro, { active: true, t: 0, scale: 0, greeted: false }); }, get state() { return state; }, motion: m, bodyUniforms: uniforms, renderer, scene, camera };
+window.orbi = { setState, nudge, cycleColour, get theme() { return THEMES[themeIdx].name; }, helmet, toggleVisor, advance: update, faceCanvas, intro, gaze, replay: () => { setState('idle', { quiet: true }); helmet.setVisorDown(false); syncVisor(); Object.assign(intro, { active: true, t: 0, scale: 0, greeted: false }); }, get state() { return state; }, motion: m, bodyUniforms: uniforms, bodyMat, renderer, scene, camera };

@@ -33,7 +33,7 @@ then visit http://localhost:8000.
   except noon yellow; the choice is remembered per browser.
 - **Helmet** (`helmet.js`) — shell, artwork, liner + stitching built from the Figma
   component's SVG paths; glass visor + hinges; procedural paint, leather and metal detail.
-- **Shading** — a soft brand-colour → white gradient down the ball, studio environment lighting, analytic helmet-on-ball occlusion, and the
+- **Shading** — lacquered candy finish (clear coat, inner glow and a brand-tinted edge glow), studio environment lighting, analytic helmet-on-ball occlusion, and the
   Figma drop / contact shadows.
 
 ## Files
