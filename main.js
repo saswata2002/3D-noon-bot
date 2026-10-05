@@ -12,6 +12,11 @@
 
 import * as THREE from 'three';
 import { createHelmet, SURFACE_GLSL, SHELL_PATH } from './helmet.js';
+import { createRobo, FACE as ROBO_FACE } from './robo.js';
+
+// Two looks share this engine: Orbi (the ball + helmet) and Bot 2 (robo.js,
+// Figma "new bot" 1154:78182), picked with ?bot=2 / the switch in the bar.
+const LOOK = new URLSearchParams(location.search).get('bot') === '2' ? 'robo' : 'orbi';
 
 // ─── constants ────────────────────────────────────────────────────────────
 const R = 1;                    // body radius (Figma body = 240px → 120px = 1 unit)
@@ -161,6 +166,7 @@ const LEFT_EYE = {
   // outer side, dropping toward the nose
   angry:    () => ({ a: linePts(-31, -9, -31, 7), b: linePts(-49, -35, -17, -21), w: 22 }),
 };
+const EYE_SET = LOOK === 'robo' ? ROBO_FACE.LEFT_EYE : LEFT_EYE;
 const FACE_OF = { idle: 'pill', working: 'pill', greeting: 'greeting', error: 'error', dizzy: 'dizzy', sleepy: 'sleepy', angry: 'angry' };
 const mirror = (pts) => pts.map(([x, y]) => [-x, y]);
 // Mouth: only the greeting smiles; every other face keeps it collapsed to a
@@ -171,14 +177,15 @@ const MOUTH = {
   frown: () => ({ a: arcPts(0, 29, 9.5, Math.PI + 0.6, Math.PI * 2 - 0.6), w: 5.5 }),
   none: () => ({ a: linePts(0, 23, 0, 23), w: 0 }),
 };
+const MOUTH_SET = LOOK === 'robo' ? ROBO_FACE.MOUTH : MOUTH;
 function faceSpec(state) {
   const kind = FACE_OF[state] || 'pill';
-  const L = LEFT_EYE[kind]();
+  const L = EYE_SET[kind]();
   const R = { a: mirror(L.a), b: mirror(L.b), w: L.w };
   const pill = kind === 'pill' ? 1 : 0;
   const happy = kind === 'greeting' ? 1 : 0;
   const angry = kind === 'angry' ? 1 : 0;
-  const mouth = happy ? MOUTH.smile() : angry ? MOUTH.frown() : MOUTH.none();
+  const mouth = happy ? MOUTH_SET.smile() : angry ? MOUTH_SET.frown() : MOUTH_SET.none();
   // brow width: the angry brow is a thinner stroke than its eye (stroke b)
   return { eyes: [L, R], mouth, glint: pill, lip: pill, cheeks: happy, flush: angry, brow: angry, blink: pill };
 }
@@ -195,6 +202,7 @@ function lerpFace(A, B, t) {
 }
 
 function drawFace(spec, open = 1) {
+  if (robo) { robo.drawFace(spec, open); return; }   // Bot 2: the face lives on its screen
   fctx.clearRect(0, 0, FACE_PX, FACE_PX);
   fctx.save();
   fctx.translate(0, FACE_DY * S);
@@ -383,12 +391,24 @@ ${HELMET_AO_GLSL}
 #include <opaque_fragment>`);
 };
 
-const body = new THREE.Mesh(geometry, bodyMat);
+const robo = LOOK === 'robo' ? createRobo() : null;
+const body = robo ? robo.group : new THREE.Mesh(geometry, bodyMat);
 body.frustumCulled = false;
 scene.add(body);
 
-const helmet = createHelmet();
-body.add(helmet.group);
+// Bot 2 has no helmet: a stand-in keeps the shared visor code paths inert
+const helmet = robo
+  ? { group: new THREE.Group(), visorDown: false, setVisorDown() {}, toggleVisor() {}, update() {}, setAccent() {}, setLogoWhite() {} }
+  : createHelmet();
+if (!robo) body.add(helmet.group);
+if (robo) {
+  key.color.set(robo.lights.key);
+  bounce.color.set(robo.lights.sky);
+  bounce.groundColor.set(robo.lights.ground);
+  rim.color.set(robo.lights.rim);
+}
+const BODY_BOTTOM = robo ? robo.bottom : R;          // distance from the centre down to where it sits on the floor
+const ORBIT_UP = robo ? 1.2 : 1.55;                  // dizzy beads circle this far above the centre
 
 // ─── shadows, exactly as Figma frame 1060:79394 ───────────────────────────
 // In the 80px frame the body is r 30, so 1 unit = 30px; Figma blur radius r
@@ -419,20 +439,20 @@ function shadowSprite(draw) {
   scene.add(mesh);
   return mesh;
 }
-const bodyShadow = shadowSprite((ctx, k) => {
+const orbiBodyShadow = (ctx, k) => {
   ctx.filter = `blur(${0.22 * k}px)`;              // Figma σ 0.15, softened ×1.5
   ctx.fillStyle = 'rgba(0,0,0,0.4)';
   ctx.beginPath();
   ctx.arc(0, 0, R * k, 0, Math.PI * 2);              // offset applied in placeShadows
   ctx.fill();
-});
-const helmetShadow = shadowSprite((ctx, k) => {
+};
+const orbiHelmetShadow = (ctx, k) => {
   ctx.filter = `blur(${0.11 * k}px)`;              // Figma σ 0.075, softened ×1.5
   ctx.fillStyle = 'rgba(0,0,0,0.45)';
   ctx.scale(k / 120, k / 120);
   ctx.translate(-164, -158);                          // offset applied in placeShadows
   ctx.fill(new Path2D(SHELL_PATH));
-});
+};
 const CONTACT_Y = HOVER_Y - 1.31;
 const contactShadow = shadowSprite((ctx, k) => {
   ctx.filter = `blur(${0.08 * k}px)`;              // Figma σ 0.053, softened ×1.5
@@ -443,7 +463,10 @@ const contactShadow = shadowSprite((ctx, k) => {
 });
 const toCam = new THREE.Vector3(), camUp = new THREE.Vector3(), qRoll = new THREE.Quaternion(), zAxis = new THREE.Vector3(0, 0, 1);
 let viewRoll = 0;                                     // the bot's on-screen roll this frame
-const DROP = [[bodyShadow, 0.183], [helmetShadow, 0.083]];   // Figma y offsets (units)
+// [sprite, Figma y offset (units)]; Bot 2 brings its own (head + ears)
+const DROP = robo
+  ? robo.shadows.map((s) => [shadowSprite(s.draw), s.dy])
+  : [[shadowSprite(orbiBodyShadow), 0.183], [shadowSprite(orbiHelmetShadow), 0.083]];
 function placeShadows() {
   toCam.subVectors(camera.position, body.position).normalize();
   camUp.set(0, 1, 0).applyQuaternion(camera.quaternion);
@@ -459,12 +482,13 @@ function placeShadows() {
   // contact shadow stays on the ground line and softens as the bot rises
   const lift = Math.max(0, body.position.y - HOVER_Y);
   // drop shadows soften as the bot rises
-  bodyShadow.material.opacity = helmetShadow.material.opacity = THREE.MathUtils.clamp((2.8 - lift) / 1.3, 0, 1);
+  for (const [sp] of DROP) sp.material.opacity = THREE.MathUtils.clamp((2.8 - lift) / 1.3, 0, 1);
   contactShadow.position.set(body.position.x, CONTACT_Y, 0);
   contactShadow.quaternion.copy(camera.quaternion);
   contactShadow.scale.setScalar((1 + Math.min(lift, 2) * 0.4) * intro.scale);
   contactShadow.material.opacity = THREE.MathUtils.clamp(1 - lift * 0.45, 0, 1) * Math.min(1, intro.scale);
-  bodyShadow.visible = helmetShadow.visible = contactShadow.visible = body.visible;
+  for (const [sp] of DROP) sp.visible = body.visible;
+  contactShadow.visible = body.visible && !robo;      // Figma Bot 2 has no ground ellipse
 }
 
 // ─── props: dizzy orbit, Zz ───────────────────────────────────────────────
@@ -690,12 +714,13 @@ function toggleVisor() {
 }
 visorBtn.addEventListener('click', toggleVisor);
 syncVisor();
+if (robo) sep.hidden = visorBtn.hidden = true;        // no visor on Bot 2
 
 // ─── colour themes ────────────────────────────────────────────────────────
 // One button cycles the bot's colour: the ball (base + lower tint) and the
 // helmet's paint + stitching (accent) change together and glide over ~0.5 s.
 // The last choice is remembered per browser (a convenience only).
-const THEMES = [
+const ORBI_THEMES = [
   // brand tiles from Figma "colour options" (1107:115295); accent = the tile colour
   { name: 'noon',      body: 0xffeb45, tint: 0xf2dc00, accent: 0xfeee00, sheen: 0xfff6c8, shade: [0.9, 0.86, 0.74] },
   { name: 'supermall', body: 0x2526cc, tint: 0x1d1ea0, accent: 0x2122b8 },
@@ -704,6 +729,20 @@ const THEMES = [
   { name: 'noon Food', body: 0xe01858, tint: 0xaf1345, accent: 0xe01858 },
   { name: 'NowNow',    body: 0xf33a01, tint: 0xbe2d01, accent: 0xf33a01 },
 ];
+// Bot 2: the Figma purple, then the same brand colours remapped over its palette
+const ROBO_THEMES = [
+  { name: 'Purple' },
+  { name: 'noon', brand: 0xfeee00 },
+  { name: 'supermall', brand: 0x2122b8 },
+  { name: 'Minutes', brand: 0xd12b28 },
+  { name: 'Jahez', brand: 0xf8113a },
+  { name: 'noon Food', brand: 0xe01858 },
+  { name: 'NowNow', brand: 0xf33a01 },
+];
+const THEMES = robo ? ROBO_THEMES : ORBI_THEMES;
+const THEME_KEY = robo ? 'orbi.theme.bot2' : 'orbi.theme';
+// Figma Bot 2 palette (head gradient, ears, rim / reflection lilacs)
+const ROBO_BASE = { headTop: 0xb886ff, headMid: 0x7924ff, headBot: 0x3a089e, earTop: 0xb07aff, earBot: 0x3e0aa8, rimLow: 0xcca6ff, refl: 0xe3d0ff };
 // Sheen, rim light and helmet-shade colour follow the body; noon keeps its
 // hand-tuned originals, the rest derive them the same way.
 const WHITE = new THREE.Color(1, 1, 1);
@@ -716,7 +755,28 @@ function themeColor(th, hex) {
   const hsl = c.getHSL({}, THREE.SRGBColorSpace);
   return c.setHSL(hsl.h, hsl.s * BRAND_SAT, hsl.l, THREE.SRGBColorSpace);
 }
+// Bot 2: every palette colour takes the brand hue and saturation; its
+// lightness is the brand's, offset by how far that colour sits from the Figma
+// purple's mid tone (×0.55 — the purple's spread reads far paler on warm
+// hues). Yellows get their darks lifted so they don't go olive.
+function roboColors(th) {
+  const out = {};
+  const SRGB = THREE.SRGBColorSpace;
+  if (!th.brand) { for (const k in ROBO_BASE) out[k] = new THREE.Color(ROBO_BASE[k]); return out; }
+  const b = new THREE.Color(th.brand).getHSL({}, SRGB);
+  const bs = th.name === 'noon' ? b.s : b.s * BRAND_SAT;
+  const mid = new THREE.Color(ROBO_BASE.headMid).getHSL({}, SRGB);
+  const yellow = b.h > 0.1 && b.h < 0.2;
+  for (const k in ROBO_BASE) {
+    const c = new THREE.Color(ROBO_BASE[k]).getHSL({}, SRGB);
+    let l = b.l + (c.l - mid.l) * 0.55;
+    if (yellow) l = 0.3 + l * 0.7;
+    out[k] = new THREE.Color().setHSL(b.h, Math.min(1, c.s * bs / mid.s), THREE.MathUtils.clamp(l, 0.05, 0.95), SRGB);
+  }
+  return out;
+}
 function toColors(th) {
+  if (robo) return roboColors(th);
   const body = themeColor(th, th.body), tint = themeColor(th, th.tint);
   const t = [(th.tint >> 16 & 255) / 255, (th.tint >> 8 & 255) / 255, (th.tint & 255) / 255];
   const mx = Math.max(...t);
@@ -729,10 +789,11 @@ function toColors(th) {
   };
 }
 let themeIdx = 0;
-try { themeIdx = Math.min(THEMES.length - 1, Math.max(0, +localStorage.getItem('orbi.theme') || 0)); } catch {}
+try { themeIdx = Math.min(THEMES.length - 1, Math.max(0, +localStorage.getItem(THEME_KEY) || 0)); } catch {}
 const themeCur = toColors(THEMES[themeIdx]);
 let themeTarget = toColors(THEMES[themeIdx]);
 function applyTheme() {
+  if (robo) { robo.setPalette(themeCur); return; }
   bodyMat.color.copy(themeCur.body);
   uniforms.uTint.value.copy(themeCur.tint);
   uniforms.uRimColor.value.copy(themeCur.rim);
@@ -746,8 +807,10 @@ function applyTheme() {
 let themeRate = 7;                                    // blend speed (1/s); quicker while it swaps mid-spin
 function updateTheme(dt) {
   const k = 1 - Math.exp(-dt * themeRate);
-  for (const key of ['body', 'tint', 'accent', 'sheen', 'rim', 'shade']) themeCur[key].lerp(themeTarget[key], k);
-  themeCur.logo += (themeTarget.logo - themeCur.logo) * k;
+  for (const key in themeTarget) {
+    if (themeCur[key]?.isColor) themeCur[key].lerp(themeTarget[key], k);
+    else themeCur[key] += (themeTarget[key] - themeCur[key]) * k;
+  }
   applyTheme();
 }
 const sep2 = document.createElement('span');
@@ -761,7 +824,7 @@ colourBtn.innerHTML = '<i class="swatch"></i><span></span>';
 nav.appendChild(colourBtn);
 function syncColour() {
   const th = THEMES[themeIdx];
-  colourBtn.querySelector('.swatch').style.background = '#' + themeColor(th, th.accent).getHexString();
+  colourBtn.querySelector('.swatch').style.background = '#' + (robo ? roboColors(th).headMid : themeColor(th, th.accent)).getHexString();
   colourBtn.querySelector('span').textContent = th.name;
   colourBtn.setAttribute('aria-label', `Colour: ${th.name}. Change colour`);
 }
@@ -772,7 +835,7 @@ const COLOUR_SPIN = { dur: 0.95, swapAt: 0.36 };       // swap once ~130° round
 const colourSpin = { active: false, t: 0, from: 0, to: 0, pending: null };
 function cycleColour() {
   themeIdx = (themeIdx + 1) % THEMES.length;
-  try { localStorage.setItem('orbi.theme', String(themeIdx)); } catch {}
+  try { localStorage.setItem(THEME_KEY, String(themeIdx)); } catch {}
   syncColour();
   if (intro.active) endIntro();
   const TAU = Math.PI * 2;
@@ -809,11 +872,36 @@ function endColourSpin() {
 colourBtn.addEventListener('click', cycleColour);
 syncColour();
 applyTheme();
+
+// ─── bot switch: Bot 1 (Orbi) ⇄ Bot 2, same engine, different look ────────
+function switchBot(look) {
+  if (look === LOOK) return;
+  const u = new URL(location.href);
+  if (look === 'robo') u.searchParams.set('bot', '2'); else u.searchParams.delete('bot');
+  location.href = u.href;
+}
+{
+  const first = nav.firstChild;
+  for (const [look, label] of [['orbi', 'Bot 1'], ['robo', 'Bot 2']]) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'bot';
+    b.textContent = label;
+    b.title = 'Switch bot (B)';
+    b.setAttribute('aria-pressed', String(LOOK === look));
+    b.addEventListener('click', () => switchBot(look));
+    nav.insertBefore(b, first);
+  }
+  const sepBot = document.createElement('span');
+  sepBot.className = 'sep';
+  nav.insertBefore(sepBot, first);
+}
 addEventListener('keydown', (e) => {
   const n = parseInt(e.key, 10);
   if (n >= 1 && n <= STATES.length) { endIntro(); setState(STATES[n - 1].key); }
   if (e.key === 'v' || e.key === 'V') toggleVisor();
   if (e.key === 'c' || e.key === 'C') cycleColour();
+  if (e.key === 'b' || e.key === 'B') switchBot(LOOK === 'robo' ? 'orbi' : 'robo');
   if (e.key === 'ArrowLeft') nudge(-1);
   if (e.key === 'ArrowRight') nudge(1);
 });
@@ -900,10 +988,10 @@ const easeInQuad = (x) => x * x;
 const easeOutCubicF = (x) => 1 - (1 - x) ** 3;
 // The "closed eye": a short horizontal stroke, exactly the size of a pill eye
 // squashed shut (28 wide × ~7 tall), so the two can hand over seamlessly.
-const SQUASH = 7.1 / 54;
+const SQUASH = LOOK === 'robo' ? ROBO_FACE.SQUASH : 7.1 / 54;
 const CLOSED = (() => {
-  const l = linePts(-42.5, -7, -21.5, -7);
-  return { eyes: [{ a: l, b: l, w: 7 }, { a: mirror(l), b: mirror(l), w: 7 }], mouth: MOUTH.none(), glint: 0, lip: 1, cheeks: 0, blink: 0 };
+  const l = LOOK === 'robo' ? ROBO_FACE.CLOSED_LINE() : linePts(-42.5, -7, -21.5, -7);
+  return { eyes: [{ a: l, b: l, w: 7 }, { a: mirror(l), b: mirror(l), w: 7 }], mouth: MOUTH_SET.none(), glint: 0, lip: 1, cheeks: 0, blink: 0 };
 })();
 const VIA = { close: 0.16, open: 0.26 };            // s: blink shut, then open into the new shape
 const VIA_BACK = { reshape: 0.3, open: 0.26 };      // back to pills: relax shut, then open gently
@@ -1087,7 +1175,7 @@ function update(dt) {
   }
 
   // hover height: a gentle bob, or sitting on the floor when asleep
-  if (state === 'sleepy') m.hoverY = FLOOR_Y + R;
+  if (state === 'sleepy') m.hoverY = FLOOR_Y + BODY_BOTTOM;
   else m.hoverY = HOVER_Y + Math.sin(t * 1.6) * (state === 'working' ? 0.02 : 0.05);
 
   updateIntro(dt);
@@ -1132,7 +1220,7 @@ function update(dt) {
     if (!o.visible) return;
     const a = t * 3.2 + o.userData.phase;
     tmpV.set(Math.cos(a) * 0.62, 0.02 * Math.sin(a * 2 + i), Math.sin(a) * 0.36);
-    o.position.copy(body.position).addScaledVector(up, 1.55).add(tmpV);
+    o.position.copy(body.position).addScaledVector(up, ORBIT_UP).add(tmpV);
   });
 
   // Zz — drift up and to the right, then fade
@@ -1172,4 +1260,4 @@ setState('idle', { quiet: true });
 requestAnimationFrame(frame);
 
 // small hook for automated checks
-window.orbi = { setState, nudge, cycleColour, get theme() { return THEMES[themeIdx].name; }, helmet, toggleVisor, advance: update, faceCanvas, intro, gaze, replay: () => { setState('idle', { quiet: true }); helmet.setVisorDown(false); syncVisor(); Object.assign(intro, { active: true, t: 0, scale: 0, greeted: false }); }, get state() { return state; }, motion: m, bodyUniforms: uniforms, bodyMat, renderer, scene, camera };
+window.orbi = { setState, nudge, cycleColour, get theme() { return THEMES[themeIdx].name; }, helmet, toggleVisor, advance: update, faceCanvas: robo ? robo.screenCanvas : faceCanvas, look: LOOK, intro, gaze, replay: () => { setState('idle', { quiet: true }); helmet.setVisorDown(false); syncVisor(); Object.assign(intro, { active: true, t: 0, scale: 0, greeted: false }); }, get state() { return state; }, motion: m, bodyUniforms: uniforms, bodyMat, renderer, scene, camera };

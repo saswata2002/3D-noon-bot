@@ -26,7 +26,7 @@
 
   nav {
     position: fixed; left: 50%; bottom: 28px; transform: translateX(-50%);
-    display: flex; gap: 4px; padding: 5px; border-radius: 999px;
+    display: flex; gap: 2px; padding: 5px; border-radius: 999px;
     background: rgba(255, 255, 255, .82); border: 1px solid var(--pill-line);
     box-shadow: 0 6px 24px rgba(29, 37, 57, .08);
     backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
@@ -36,12 +36,13 @@
   nav button {
     appearance: none; border: 0; cursor: pointer; white-space: nowrap;
     font: inherit; color: var(--muted); background: transparent;
-    padding: 8px 14px; border-radius: 999px; transition: color .2s, background .2s;
+    padding: 8px 11px; border-radius: 999px; transition: color .2s, background .2s;
   }
   nav button:hover { color: var(--ink); }
   nav button[aria-pressed="true"] { color: var(--ink); background: var(--accent); }
   nav .sep { width: 1px; margin: 6px 2px; background: var(--pill-line); flex: none; }
   nav button.visor[aria-pressed="true"] { color: var(--ink); background: rgba(29, 37, 57, .08); }
+  nav button.bot[aria-pressed="true"] { color: #fff; background: var(--ink); }
   nav button.colour { display: flex; align-items: center; gap: 7px; }
   nav button.colour .swatch {
     width: 14px; height: 14px; border-radius: 50%; flex: none;
@@ -50,7 +51,7 @@
 
   @media (max-width: 640px) {
     nav { bottom: 16px; }
-    nav button { padding: 8px 11px; }
+    nav button { padding: 8px 9px; }
   }
 </style>
 </head>

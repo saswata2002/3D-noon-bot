@@ -13,6 +13,16 @@ python3 -m http.server 8000
 
 then visit http://localhost:8000.
 
+## Two bots
+
+- **Bot 1 — Orbi**: the yellow ball with the helmet (default).
+- **Bot 2**: a 1:1 3D build of the Figma "new bot" (1154:78182) — purple speckled head,
+  ear pods with lenses, rails and bolts, silver bezel and a dark glass screen whose
+  face glows green. Open it with `?bot=2`, the **Bot 1 / Bot 2** switch in the bar, or **B**.
+
+Both share one engine (`main.js`): states, face morphs, blinks, intro, drag / spin,
+colour themes and shadows behave identically; only the look differs (Bot 2 has no visor).
+
 ## What's in it
 
 - **States** — Idle, Greeting, Working, Error, Dizzy, Sleepy, Angry (bar at the bottom, or keys 1–7).
@@ -41,4 +51,5 @@ then visit http://localhost:8000.
 - `index.html` — page + state bar
 - `main.js` — scene, bot, face morphing, motion, intro, shadows
 - `helmet.js` — the helmet
+- `robo.js` — Bot 2's look (head, ears, bezel, screen face, shadows)
 - `vendor/` — three.js r186
