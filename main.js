@@ -26,6 +26,11 @@ const GRAVITY = 17;              // low: a light, floaty toy ball
 const DRAG_YAW = 0.0105;        // rad per px of horizontal drag (~360° over 600px)
 const DRAG_PITCH = 0.006;       // rad per px of vertical drag (tilt while swiping the visor)
 const MAX_TILT = 0.5;
+// Bot 2 doesn't spin freely: a sideways drag turns it like the vertical drag
+// tilts it — following the finger, softly limited to ±MAX_TURN (rubber band),
+// springing back face-on when released, with no fling.
+const DRAG_TURN = 0.006;        // rad per px (same feel as DRAG_PITCH)
+const MAX_TURN = 0.55;
 const BASE_PITCH = -0.2;        // tip the face up toward the camera
 
 const STATES = [
@@ -402,6 +407,7 @@ const helmet = robo
   : createHelmet();
 if (!robo) body.add(helmet.group);
 if (robo) {
+  robo.setMetalEnv(pmrem.fromScene(robo.chromeEnvironment(), 0.02).texture);   // the chrome bezel's own reflections
   key.color.set(robo.lights.key);
   bounce.color.set(robo.lights.sky);
   bounce.groundColor.set(robo.lights.ground);
@@ -557,6 +563,7 @@ function planReturn() {
 function nudge(dir) {
   m.lastDir = dir;
   m.homing = false;
+  if (robo) { m.spinV += dir * 4; return; }          // Bot 2: a small look-round, never a full turn
   m.spinV += dir * 14;                                // about one full turn, then home
 }
 
@@ -918,7 +925,7 @@ const VISOR_SWIPE_PX = 35;
 let gesture = null;
 
 canvas.addEventListener('pointerdown', (e) => {
-  gesture = { x: e.clientX, y: e.clientY, lx: e.clientX, ly: e.clientY, lt: performance.now(), t: performance.now(), moved: 0, axis: null, fired: false };
+  gesture = { x: e.clientX, y: e.clientY, lx: e.clientX, ly: e.clientY, lt: performance.now(), t: performance.now(), moved: 0, axis: null, fired: false, turn: 0 };
   if (intro.active) { const sp = m.spin; endIntro(); m.spin = sp; }   // grab takes over mid-turn
   if (colourSpin.active) { const sp = m.spin; endColourSpin(); m.spin = sp; }
   m.dragging = true;
@@ -954,6 +961,16 @@ canvas.addEventListener('pointermove', (e) => {
     return;
   }
   if (state === 'sleepy') setState('idle', { quiet: true });
+  if (robo) {
+    // rubber band: raw drag → soft-limited turn (tanh), starting from where it was
+    if (!gesture.turnInit) { gesture.turn = Math.atanh(THREE.MathUtils.clamp(m.spin / MAX_TURN, -0.95, 0.95)) * MAX_TURN; gesture.turnInit = true; }
+    gesture.turn += dx * DRAG_TURN;
+    const next = MAX_TURN * Math.tanh(gesture.turn / MAX_TURN);
+    m.dragVel += ((next - m.spin) / dt - m.dragVel) * 0.35;
+    m.spin = next;
+    if (dx) m.lastDir = Math.sign(dx);
+    return;
+  }
   m.spin += dx * DRAG_YAW;
   // smoothed angular velocity, used for the release glide and the lean
   m.dragVel += ((dx * DRAG_YAW) / dt - m.dragVel) * 0.35;
@@ -967,7 +984,7 @@ function endGesture() {
   m.dragging = false;
   // stale velocity (pointer held still before release) shouldn't fling it
   const idle = performance.now() - g.lt;
-  m.spinV = idle > 80 ? 0 : THREE.MathUtils.clamp(m.dragVel, -14, 14);
+  m.spinV = robo ? 0 : idle > 80 ? 0 : THREE.MathUtils.clamp(m.dragVel, -14, 14);   // Bot 2: no fling, just springs back
   m.dragVel = 0;
   canvas.classList.remove('grabbing');
   if (g.moved < 6 && performance.now() - g.t < 300) tap();
@@ -1187,6 +1204,7 @@ function update(dt) {
   updateGaze(dt);
   helmet.update(dt);
   updateTheme(dt);
+  robo?.update(t);
   // state pose, crossfaded from the previous state's pose after a change
   poseBlend = Math.min(1, poseBlend + dt / POSE_BLEND_S);
   prevStateTime += dt;

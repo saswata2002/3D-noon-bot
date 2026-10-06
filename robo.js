@@ -10,9 +10,8 @@
 //           gradient #b886ff → #7924ff (45%) → #3a089e, 90 white speckles
 //   Ears    45 × 80 pods behind the head sides, #b07aff → #3e0aa8, each with
 //           a silver-rimmed lens ("Light · off") facing out
-//   Rails / bolts on the forehead, two bolts down each cheek
 //   Bezel   150 × 105 r35 silver frame; Screen 138 × 93 r30, dark glass with
-//           scanlines, glare and a top reflection; the face is drawn on it
+//           scanlines and a top reflection; the face is drawn on it
 //           in glowing green (Figma eyes: 28 × 38, radial #d9ffd2 → #5cff4f
 //           → #2fc423, glows 15 px @90% + 40 px @50%)
 import * as THREE from 'three';
@@ -50,6 +49,32 @@ function gradHead(x, y, z, out) {
     sdHead(x, y, z + e) - sdHead(x, y, z - e),
   ).normalize();
   return out;
+}
+
+// Ears: capsule pods (r 22.5, straight 35 px, depth ×1.25) tucked behind the
+// head sides, as in Figma. They're fused into the head with a smooth union
+// (a ~10 px fillet), so head and pods are one moulded shape instead of two
+// solids jammed together.
+const EAR = { r: 22.5 * PX, len: 35 * PX, depth: 1.25, x: 97.5 * PX, y: -5 * PX, lensAng: 0.4, fillet: 10 * PX };
+function sdEarAt(side, x, y, z) {
+  const lx = x - side * EAR.x, ly = y - EAR.y, lz = z / EAR.depth;
+  return Math.hypot(lx, Math.max(Math.abs(ly) - EAR.len / 2, 0), lz) - EAR.r;
+}
+function smin(a, b, k) {                      // polynomial smooth minimum
+  const h = THREE.MathUtils.clamp(0.5 + 0.5 * (b - a) / k, 0, 1);
+  return b + (a - b) * h - k * h * (1 - h);
+}
+function sdBody(x, y, z) {
+  const d = smin(sdHead(x, y, z), sdEarAt(-1, x, y, z), EAR.fillet);
+  return smin(d, sdEarAt(1, x, y, z), EAR.fillet);
+}
+function gradBody(x, y, z, out) {
+  const e = 1e-3;
+  return out.set(
+    sdBody(x + e, y, z) - sdBody(x - e, y, z),
+    sdBody(x, y + e, z) - sdBody(x, y - e, z),
+    sdBody(x, y, z + e) - sdBody(x, y, z - e),
+  ).normalize();
 }
 
 // front surface height of the head, z = zf(x, y), on a grid (bilinear lookup)
@@ -137,22 +162,40 @@ function screenPath(ctx) {
 }
 
 // ─── materials helpers ────────────────────────────────────────────────────
-function gradientMat(params, uniforms, { yHalf, stops }) {
-  const mat = new THREE.MeshPhysicalMaterial(params);
-  mat.onBeforeCompile = (sh) => {
-    Object.assign(sh.uniforms, uniforms);
-    sh.vertexShader = sh.vertexShader
-      .replace('#include <common>', '#include <common>\nvarying vec3 vObj;')
-      .replace('#include <begin_vertex>', '#include <begin_vertex>\nvObj = position;');
-    sh.fragmentShader = sh.fragmentShader
-      .replace('#include <common>', `#include <common>\nvarying vec3 vObj;\n${Object.keys(uniforms).map(k => `uniform ${uniforms[k].glsl} ${k};`).join('\n')}`)
-      .replace('#include <color_fragment>', `#include <color_fragment>
-float gy = clamp((${yHalf.toFixed(4)} - vObj.y) / ${(2 * yHalf).toFixed(4)}, 0.0, 1.0);
-${stops}`);
-  };
-  return mat;
-}
 const U = (value, glsl) => ({ value, glsl });
+
+// ─── chrome studio: what the metal bezel reflects ─────────────────────────
+// A light gradient dome (bright overhead, soft grey horizon, dark floor) with
+// a big key softbox up-left, a strip light on each side and a top bar, so the
+// chrome reads bright with crisp highlights and a darker lower band.
+function chromeEnvironment() {
+  const env = new THREE.Scene();
+  env.add(new THREE.Mesh(
+    new THREE.SphereGeometry(20, 48, 24),
+    new THREE.ShaderMaterial({
+      side: THREE.BackSide,
+      vertexShader: 'varying vec3 vP; void main(){ vP = position; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
+      fragmentShader: `varying vec3 vP;
+        void main(){
+          float h = normalize(vP).y;
+          vec3 floorC = vec3(0.03, 0.03, 0.04), horizon = vec3(0.26, 0.27, 0.31), sky = vec3(0.92, 0.93, 0.98);
+          vec3 c = h < 0.0 ? mix(horizon * 0.6, floorC, smoothstep(0.0, -0.4, h)) : mix(horizon, sky, smoothstep(0.12, 0.75, h));
+          gl_FragColor = vec4(c, 1.0);
+        }`,
+    }),
+  ));
+  const panel = (w, h, intensity, pos) => {
+    const m = new THREE.Mesh(new THREE.PlaneGeometry(w, h), new THREE.MeshBasicMaterial({ color: new THREE.Color(1, 1, 1).multiplyScalar(intensity), side: THREE.DoubleSide }));
+    m.position.set(...pos);
+    m.lookAt(0, 0, 0);
+    env.add(m);
+  };
+  panel(12, 9, 3.2, [-7, 7, 10]);    // key softbox, up-left in front
+  panel(2.2, 14, 2.4, [-12, 1, 3]);  // left strip
+  panel(2.2, 14, 1.8, [12, 1, 3]);   // right strip
+  panel(16, 1.6, 2.6, [0, 11, 4]);   // top bar
+  return env;
+}
 
 // ─── build ────────────────────────────────────────────────────────────────
 export function createRobo() {
@@ -179,6 +222,7 @@ export function createRobo() {
   speckTex.anisotropy = 8;
   const headUniforms = {
     uHeadTop: pal.headTop, uHeadMid: pal.headMid, uHeadBot: pal.headBot, uRimLow: pal.rimLow, uRefl: pal.refl,
+    uEarTop: pal.earTop, uEarBot: pal.earBot,
     speckMap: U(speckTex, 'sampler2D'),
   };
   const headMat = new THREE.MeshPhysicalMaterial({
@@ -194,17 +238,21 @@ export function createRobo() {
       .replace('#include <common>', `#include <common>
 varying vec3 vObj;
 varying vec3 vObjN;
-uniform vec3 uHeadTop, uHeadMid, uHeadBot, uRimLow, uRefl;
+uniform vec3 uHeadTop, uHeadMid, uHeadBot, uRimLow, uRefl, uEarTop, uEarBot;
 uniform sampler2D speckMap;
 float sdRR(vec2 p, vec2 b, float r) { vec2 q = abs(p) - b + r; return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - r; }`)
       .replace('#include <color_fragment>', `#include <color_fragment>
 // Figma Head fill: linear #b886ff → #7924ff (45%) → #3a089e, top to bottom
 float gy = clamp((${HEAD.hh.toFixed(4)} - vObj.y) / ${(2 * HEAD.hh).toFixed(4)}, 0.0, 1.0);
 vec3 base = gy < 0.45 ? mix(uHeadTop, uHeadMid, gy / 0.45) : mix(uHeadMid, uHeadBot, (gy - 0.45) / 0.55);
+// ear pods: their own Figma gradient #b07aff → #3e0aa8 over the pod, blended across the fillet
+float earW = smoothstep(${(HEAD.hw - 6 * PX).toFixed(4)}, ${(HEAD.hw + 5 * PX).toFixed(4)}, abs(vObj.x));
+float gyE = clamp((${(40 * PX).toFixed(4)} - (vObj.y - (${EAR.y.toFixed(4)}))) / ${(80 * PX).toFixed(4)}, 0.0, 1.0);
+base = mix(base, mix(uEarTop, uEarBot, gyE), earW);
 diffuseColor.rgb = base;
 // speckles (front/back projection, faded where the surface turns sideways)
 vec2 suv = vec2(vObj.x / ${(2 * HEAD.hw).toFixed(4)} + 0.5, vObj.y / ${(2 * HEAD.hh).toFixed(4)} + 0.5);
-float speckA = texture2D(speckMap, suv).a * smoothstep(0.2, 0.55, abs(normalize(vObjN).z));
+float speckA = texture2D(speckMap, suv).a * smoothstep(0.2, 0.55, abs(normalize(vObjN).z)) * (1.0 - earW);
 diffuseColor.rgb = mix(diffuseColor.rgb, vec3(1.0), speckA);
 // bezel drop shadow on the face (Figma: #14002e 60%, y +7, blur 10)
 float bezSd = sdRR(vec2(vObj.x, vObj.y - (${BEZ.cy.toFixed(4)}) + ${(7 * PX).toFixed(4)}), vec2(${BEZ.hw.toFixed(4)}, ${BEZ.hh.toFixed(4)}), ${BEZ.r.toFixed(4)});
@@ -222,11 +270,12 @@ outgoingLight *= 1.0 - bezSh * 0.8;
   vec2 dir2 = normalize(vn.xy + vec2(1e-4));
   float topness = vn.y * 0.5 + 0.5;
   vec3 edge = mix(uRimLow * 0.55, vec3(0.7), smoothstep(0.45, 0.85, topness)) * (1.0 - smoothstep(0.38, 0.62, topness) * (1.0 - smoothstep(0.62, 0.85, topness)));
-  outgoingLight += edge * smoothstep(0.62, 0.92, fr) * 0.9;
+  float onHeadOnly = 1.0 - earW;                   // the painted edge light belongs to the head outline, not the pods
+  outgoingLight += edge * smoothstep(0.62, 0.92, fr) * 0.9 * onHeadOnly;
   float band = smoothstep(0.32, 0.46, fr) * (1.0 - smoothstep(0.52, 0.64, fr));
   float ul = smoothstep(0.55, 0.95, dot(dir2, normalize(vec2(-1.0, 1.1))));
   float lr = smoothstep(0.6, 0.95, dot(dir2, normalize(vec2(1.0, -0.9))));
-  outgoingLight += band * (vec3(0.55) * ul + uRefl * 0.4 * lr);
+  outgoingLight += band * (vec3(0.55) * ul + uRefl * 0.4 * lr) * onHeadOnly;
   // Figma "Softbox" (white 26%, blur 22, top-left), "Shine" and "Specular" (white 75%, 35 × 15 at 25°)
   vec3 sbDir = normalize(vec3(-0.42, 0.62, 0.66));
   float sb = max(dot(vn, sbDir), 0.0);
@@ -234,13 +283,13 @@ outgoingLight *= 1.0 - bezSh * 0.8;
   outgoingLight += vec3(0.55) * smoothstep(0.93, 0.985, sb);
   // bottom: lilac inner glow (inner shadow #c29bff 45% y −7 blur 14 + the 55% lilac stroke)
   float bottomness = smoothstep(-0.05, -0.75, vn.y);
-  outgoingLight += uRimLow * 0.42 * bottomness * smoothstep(0.25, 0.8, fr);
+  outgoingLight += uRimLow * 0.42 * bottomness * smoothstep(0.25, 0.8, fr) * onHeadOnly;
 }
 #include <opaque_fragment>`);
   };
-  const headScale = new THREE.Vector3(HEAD.hw, HEAD.hh, HEAD.dz);
-  const headGeo = meshSDF(sdHead, new THREE.Vector3(), headScale, 1.2, 256, 192,
-    (p, n) => gradHead(p.x, p.y, p.z, n));
+  const headScale = new THREE.Vector3(EAR.x + EAR.r, HEAD.hh, HEAD.dz);
+  const headGeo = meshSDF(sdBody, new THREE.Vector3(), headScale, 1.3, 384, 256,
+    (p, n) => gradBody(p.x, p.y, p.z, n));
   const head = new THREE.Mesh(headGeo, headMat);
   group.add(head);
 
@@ -272,21 +321,11 @@ outgoingLight *= 1.0 - bezSh * 0.8;
       nrm.setXYZ(i, v.x, v.y, v.z);
     }
   }
-  // Figma bezel: linear #fff → #cfd3e2 (22%) → #f8f9ff (42%) → #8d93a8 (68%) → #e9ecf7, at ~51°
-  const bezMat = new THREE.MeshPhysicalMaterial({ roughness: 0.25, metalness: 0.08, clearcoat: 1, clearcoatRoughness: 0.08 });
-  bezMat.onBeforeCompile = (sh) => {
-    sh.vertexShader = sh.vertexShader
-      .replace('#include <common>', '#include <common>\nvarying vec3 vObj;')
-      .replace('#include <begin_vertex>', '#include <begin_vertex>\nvObj = position;');
-    sh.fragmentShader = sh.fragmentShader
-      .replace('#include <common>', '#include <common>\nvarying vec3 vObj;')
-      .replace('#include <color_fragment>', `#include <color_fragment>
-vec2 bp = vec2(vObj.x / ${(2 * BEZ.hw).toFixed(4)} + 0.5, 0.5 - (vObj.y - (${BEZ.cy.toFixed(4)})) / ${(2 * BEZ.hh).toFixed(4)});
-float s = clamp(dot(bp - 0.5, normalize(vec2(0.62, 0.78))) * 1.15 + 0.5, 0.0, 1.0);
-vec3 c0 = vec3(1.0), c1 = vec3(0.624, 0.651, 0.761), c2 = vec3(0.939, 0.947, 1.0), c3 = vec3(0.42, 0.45, 0.56), c4 = vec3(0.815, 0.838, 0.930);
-vec3 bc = s < 0.22 ? mix(c0, c1, s / 0.22) : s < 0.42 ? mix(c1, c2, (s - 0.22) / 0.2) : s < 0.68 ? mix(c2, c3, (s - 0.42) / 0.26) : mix(c3, c4, (s - 0.68) / 0.32);
-diffuseColor.rgb = bc;`);
-  };
+  // Bezel: fully metallic, satin finish (roughness 0.36 — mirror chrome read too hard). A metal shows only what it reflects,
+  // so it gets its own bright chrome-studio environment (see chromeEnvironment;
+  // main.js bakes it and hands it over through setMetalEnv) instead of the dim
+  // satin-ball studio the rest of the scene uses.
+  const bezMat = new THREE.MeshPhysicalMaterial({ color: 0xeef0f6, metalness: 1, roughness: 0.36, envMapIntensity: 1.1 });   // satin-brushed, not mirror
   const bezel = new THREE.Mesh(bezGeo, bezMat);
   group.add(bezel);
 
@@ -310,56 +349,130 @@ diffuseColor.rgb = bc;`);
     color: 0x000000, map: screenTex, emissive: 0xffffff, emissiveMap: screenTex, alphaTest: 0.5,
     roughness: 0.4, clearcoat: 0.45, clearcoatRoughness: 0.18, specularIntensity: 0.15,
   });
+  // Retro-TV scanlines (Figma: 3 px black 35% every 8 px from y 5), animated in
+  // the screen shader so the face canvas needn't redraw:
+  //   • the lines crawl down CRT.crawl px/s
+  //   • a soft refresh bar rolls top → bottom every CRT.roll s, brightening the
+  //     picture and thinning the lines as it passes
+  //   • a faint brightness flicker
+  // All blended in sRGB space over the emitted screen colour, like the Figma layers.
+  const CRT = { pitch: 8, line: 3, dark: 0.35, crawl: 14, roll: 3.2, barH: 9, barGain: 0.07, flicker: 0.025 };
+  const crtU = { uScroll: { value: 0 }, uBarY: { value: -30 }, uFlicker: { value: 1 } };
+  scrMat.onBeforeCompile = (sh) => {
+    Object.assign(sh.uniforms, crtU);
+    sh.fragmentShader = sh.fragmentShader
+      .replace('#include <common>', '#include <common>\nuniform float uScroll, uBarY, uFlicker;')
+      .replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>
+{
+  float py = (1.0 - vEmissiveMapUv.y) * ${SH.toFixed(1)};                 // screen px, y down
+  float bar = exp(-pow((py - uBarY) / ${CRT.barH.toFixed(1)}, 2.0));      // rolling refresh bar
+  float ly = mod(py - 5.0 - uScroll, ${CRT.pitch.toFixed(1)});
+  float aa = fwidth(py);
+  float line = smoothstep(-aa, aa, ly) * (1.0 - smoothstep(${CRT.line.toFixed(1)} - aa, ${CRT.line.toFixed(1)} + aa, ly));
+  vec3 srgb = pow(max(totalEmissiveRadiance, 0.0), vec3(1.0 / 2.2));
+  srgb *= 1.0 - ${CRT.dark.toFixed(2)} * line * (1.0 - 0.55 * bar);
+  srgb += ${CRT.barGain.toFixed(3)} * bar;
+  srgb *= uFlicker;
+  totalEmissiveRadiance = pow(max(srgb, 0.0), vec3(2.2));
+}`);
+  };
   const screen = new THREE.Mesh(scrGeo, scrMat);
   group.add(screen);
 
-  // ── ears (behind the head sides) with their lenses ──
-  const earMat = gradientMat({ roughness: 0.42, clearcoat: 0.8, clearcoatRoughness: 0.2, sheen: 0.25, sheenColor: new THREE.Color(0xe9dcff) },
-    { uEarTop: pal.earTop, uEarBot: pal.earBot },
-    { yHalf: 40 * PX, stops: 'diffuseColor.rgb = mix(uEarTop, uEarBot, gy);' });
+  // ── ear lenses (the pods themselves are part of the head mesh, see sdBody) ──
   const silverMat = new THREE.MeshPhysicalMaterial({ color: 0xdfe3f2, roughness: 0.22, metalness: 0.5, clearcoat: 1, clearcoatRoughness: 0.06 });
   const lightMat = new THREE.MeshPhysicalMaterial({ color: 0x1a142e, roughness: 0.25, clearcoat: 1, clearcoatRoughness: 0.04 });
-  const boltMat = new THREE.MeshPhysicalMaterial({ color: 0x2c2645, roughness: 0.38, metalness: 0.15, clearcoat: 1, clearcoatRoughness: 0.1 });
-  const lensGeo = new THREE.CylinderGeometry(1, 1, 1, 64).rotateX(Math.PI / 2);   // axis → +z
-  const EAR = { r: 22.5 * PX, len: 35 * PX, depth: 1.25, x: 97.5 * PX, y: -5 * PX, lensAng: 0.4 };
   const zAxis = new THREE.Vector3(0, 0, 1);
+  // Lens parts are moulded onto the pod rather than stuck on: every vertex is
+  // laid out on an ellipse in the lens plane, dropped onto the pod's curved
+  // surface along the lens axis, then raised by a cross-section profile
+  // (px, along the pod's normal). Rings share their seam vertex, so normals are
+  // smooth all the way round.
+  //   rim:   rounded silver bead, outer 25 × 55 → inner 15 × 40 (Figma "Rim"),
+  //          rising out of the pod and dropping into the recess
+  //   glass: dark, slightly domed lens sat in the recess (Figma "Light · off")
+  const LENS = { ao: 12.5, bo: 27.5, ai: 7.5, bi: 20, bead: 3.6, recess: 0.45, seg: 128 };   // recess: glass edge height above the pod (px), below the bead top
+  function lensGeometry(at, axis, rows, centre = null) {
+    const u = new THREE.Vector3().crossVectors(new THREE.Vector3(0, 1, 0), axis).normalize();
+    const v = new THREE.Vector3().crossVectors(axis, u).normalize();
+    const q = new THREE.Vector3(), p = new THREE.Vector3(), n = new THREE.Vector3();
+    const sd = (P) => sdBody(P.x, P.y, P.z);          // the fused head + pod surface (fillet included)
+    const place = (ex, ey, hPx, out) => {
+      q.copy(at).addScaledVector(u, ex * PX).addScaledVector(v, ey * PX);
+      let lo = -0.2, hi = 0.2;                       // onto the pod along the lens axis
+      for (let k = 0; k < 32; k++) {
+        const mid = (lo + hi) / 2;
+        p.copy(q).addScaledVector(axis, mid);
+        if (sd(p) < 0) lo = mid; else hi = mid;
+      }
+      p.copy(q).addScaledVector(axis, (lo + hi) / 2);
+      gradBody(p.x, p.y, p.z, n);
+      out.push(p.x + n.x * hPx * PX, p.y + n.y * hPx * PX, p.z + n.z * hPx * PX);
+    };
+    const pos = [], idx = [], S = LENS.seg;
+    if (centre) place(0, 0, centre, pos);
+    for (const r of rows) {
+      for (let i = 0; i < S; i++) {
+        const t = (i / S) * Math.PI * 2;
+        place(Math.cos(t) * r.a, Math.sin(t) * r.b, r.h, pos);
+      }
+    }
+    const base = centre ? 1 : 0;
+    if (centre) for (let i = 0; i < S; i++) idx.push(0, 1 + i, 1 + ((i + 1) % S));
+    for (let j = 0; j < rows.length - 1; j++) {
+      for (let i = 0; i < S; i++) {
+        const a = base + j * S + i, b = base + j * S + ((i + 1) % S);
+        const c = base + (j + 1) * S + i, d = base + (j + 1) * S + ((i + 1) % S);
+        idx.push(a, c, b, b, c, d);
+      }
+    }
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    g.setIndex(idx);
+    g.computeVertexNormals();
+    // keep the faces pointing out of the pod whichever way round the rings wound
+    // (judged on a ring halfway across the part — the rim's first ring is its
+    // inner wall, whose normal faces sideways and can't tell)
+    const nr = g.attributes.normal;
+    const mid = base + Math.floor(rows.length / 2) * S;
+    if (new THREE.Vector3(nr.getX(mid), nr.getY(mid), nr.getZ(mid)).dot(axis) < 0) {
+      for (let i = 0; i < idx.length; i += 3) [idx[i + 1], idx[i + 2]] = [idx[i + 2], idx[i + 1]];
+      g.setIndex(idx);
+      g.computeVertexNormals();
+    }
+    return g;
+  }
+  const rimRows = () => {
+    const rows = [];
+    // inner wall: from the recess floor up to the bead's inner shoulder
+    const T0 = 0.45, W = 0.55;
+    const bead = (t) => LENS.bead * Math.sqrt(Math.max(0, 1 - ((t - T0) / W) ** 2));
+    rows.push({ a: LENS.ai * 0.995, b: LENS.bi * 0.995, h: LENS.recess - 0.2 });
+    rows.push({ a: LENS.ai, b: LENS.bi, h: bead(0) * 0.55 });
+    for (let k = 0; k <= 16; k++) {
+      const t = k / 16;
+      rows.push({ a: LENS.ai + (LENS.ao - LENS.ai) * t, b: LENS.bi + (LENS.bo - LENS.bi) * t, h: k === 16 ? -0.4 : bead(t) });
+    }
+    return rows;
+  };
+  const glassRows = () => {
+    const rows = [];
+    for (let k = 1; k <= 12; k++) {
+      const t = k / 12;
+      rows.push({ a: LENS.ai * 0.985 * t, b: LENS.bi * 0.985 * t, h: LENS.recess + 1.1 * (1 - t * t) });
+    }
+    return rows;
+  };
   for (const side of [-1, 1]) {
-    const ear = new THREE.Mesh(new THREE.CapsuleGeometry(EAR.r, EAR.len, 24, 64), earMat);
-    ear.scale.set(1, 1, EAR.depth);
-    ear.position.set(side * EAR.x, EAR.y, 0);
-    group.add(ear);
     // lens on the outer front of the pod, turned ~23° out: Figma rim 25 × 55 centred 105 px out, inset in the pod
     const a = EAR.lensAng;
-    const nrm = new THREE.Vector3(side * Math.sin(a), 0, Math.cos(a) / EAR.depth).normalize();
+    const axis = new THREE.Vector3(side * Math.sin(a), 0, Math.cos(a) / EAR.depth).normalize();
     const at = new THREE.Vector3(side * EAR.x + side * Math.sin(a) * EAR.r, EAR.y, Math.cos(a) * EAR.r * EAR.depth);
-    const q = new THREE.Quaternion().setFromUnitVectors(zAxis, nrm);
-    const rim = new THREE.Mesh(lensGeo, silverMat);
-    rim.scale.set(12.5 * PX, 27.5 * PX, 5 * PX);
-    rim.position.copy(at); rim.quaternion.copy(q);
-    group.add(rim);
-    const light = new THREE.Mesh(lensGeo, lightMat);
-    light.scale.set(7.5 * PX, 20 * PX, 6 * PX);
-    light.position.copy(at).addScaledVector(nrm, 0.6 * PX); light.quaternion.copy(q);
-    group.add(light);
+    group.add(new THREE.Mesh(lensGeometry(at, axis, rimRows()), silverMat));
+    group.add(new THREE.Mesh(lensGeometry(at, axis, glassRows(), LENS.recess + 1.1), lightMat));
   }
 
-  // ── cheek bolts, sat on the head surface (the Figma forehead rails + bolts were removed on request) ──
-  const nTmp = new THREE.Vector3();
-  const facing = new THREE.Vector3();
-  function onHead(mesh, fx, fy, lift = 0, upright = 0) {
-    const x = hx(fx), y = hy(fy), z = zf(x, y);
-    gradHead(x, y, z, nTmp);
-    mesh.position.set(x, y, z).addScaledVector(nTmp, lift);
-    facing.copy(nTmp).lerp(zAxis, upright).normalize();   // upright: tip toward the camera, like the flat drawing
-    mesh.quaternion.setFromUnitVectors(zAxis, facing);
-    group.add(mesh);
-    return mesh;
-  }
-  const boltGeo = new THREE.SphereGeometry(1, 32, 16);
-  for (const [fx, fy, d] of [[19.5, 114.5, 9], [19.5, 134.5, 9], [179.5, 114.5, 9], [179.5, 134.5, 9]]) {
-    const b = onHead(new THREE.Mesh(boltGeo, boltMat), fx, fy, 0.002);
-    b.scale.set(d / 2 * PX, d / 2 * PX, d / 2 * PX * 0.5);
-  }
+  // (the Figma forehead rails and all bolts were removed on request)
 
   // ── face drawing (screen canvas) ──
   const X = (x) => (SW / 2 + x) * SC, Y = (y) => (SH / 2 + y) * SC;
@@ -450,16 +563,8 @@ diffuseColor.rgb = bc;`);
       }
     }
 
-    // scanlines: 3 px every 8 px from y 5, black 35%
-    sctx.fillStyle = 'rgba(0,0,0,0.35)';
-    for (let i = 0; i < 11; i++) sctx.fillRect(0, (5 + i * 8) * SC, W, 3 * SC);
-    // glare: 25 × 130 white 14%, rotated −35° at (80, −10)
-    sctx.save();
-    sctx.translate(80 * SC, -10 * SC);
-    sctx.rotate((35 * Math.PI) / 180);
-    sctx.fillStyle = 'rgba(255,255,255,0.14)';
-    sctx.fillRect(0, 0, 25 * SC, 130 * SC);
-    sctx.restore();
+    // (scanlines are animated in the screen shader — see CRT)
+    // (the Figma glare band was removed on request)
     // reflection: top 40 px, white 14% → 0
     const rf = sctx.createLinearGradient(0, 0, 0, 40 * SC);
     rf.addColorStop(0, 'rgba(255,255,255,0.14)'); rf.addColorStop(1, 'rgba(255,255,255,0)');
@@ -522,6 +627,13 @@ diffuseColor.rgb = bc;`);
     palette: pal,
     // neutral-cool studio light (Orbi's is warm): keeps the silver silver
     lights: { key: 0xffffff, sky: 0xf4f2ff, ground: 0x4c4466, rim: 0xeeeaff },
+    chromeEnvironment,
+    update(t) {                                  // retro-TV scanlines: crawl, refresh bar, flicker
+      crtU.uScroll.value = (t * CRT.crawl) % CRT.pitch;
+      crtU.uBarY.value = -30 + ((t / CRT.roll) % 1) * (SH + 60);
+      crtU.uFlicker.value = 1 + CRT.flicker * Math.sin(t * 47) * Math.sin(t * 13.3);
+    },
+    setMetalEnv(tex) { bezMat.envMap = tex; bezMat.needsUpdate = true; },
     setPalette(p) { for (const k in p) if (pal[k]) pal[k].value.copy(p[k]); },
   };
 }

@@ -16,12 +16,13 @@ then visit http://localhost:8000.
 ## Two bots
 
 - **Bot 1 — Orbi**: the yellow ball with the helmet (default).
-- **Bot 2**: a 1:1 3D build of the Figma "new bot" (1154:78182) — purple speckled head,
-  ear pods with lenses, rails and bolts, silver bezel and a dark glass screen whose
-  face glows green. Open it with `?bot=2`, the **Bot 1 / Bot 2** switch in the bar, or **B**.
+- **Bot 2**: a 3D build of the Figma "new bot" (1154:78182) — purple speckled head with
+  moulded ear pods and lenses, a satin-metal bezel and a dark glass screen with rolling
+  retro-TV scanlines, whose face glows green. Open it with `?bot=2`, the **Bot 1 / Bot 2** switch in the bar, or **B**.
 
 Both share one engine (`main.js`): states, face morphs, blinks, intro, drag / spin,
-colour themes and shadows behave identically; only the look differs (Bot 2 has no visor).
+colour themes and shadows behave identically; only the look differs (Bot 2 has no visor, and a
+sideways drag only turns it ~30° with a soft limit, then it springs back face-on — no free spin).
 
 ## What's in it
 
